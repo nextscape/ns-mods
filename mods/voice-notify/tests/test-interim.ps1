@@ -8,12 +8,18 @@
 要約ファイル（mod が書く）は置かないので、要約は読まれず抜き出しの経路を通る。
 #>
 $Here    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Notify  = Join-Path $Here "notify.ps1"
-$Log     = Join-Path $Here "notify.log"
+$PluginRoot = Split-Path -Parent $Here
+# ホームは一時フォルダ（利用者の ~/.claude/voice-notify には触れない）。終わったら消す
+$TestHome = Join-Path $env:TEMP ("voice-notify-test-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+$env:VOICE_NOTIFY_HOME = $TestHome
+. (Join-Path $Here "_testlib.ps1")
+New-TestPhrases $TestHome (Join-Path $PluginRoot "config.default.json")
+$Notify  = Join-Path $PluginRoot "scripts\notify.ps1"
+$Log     = Join-Path $TestHome "notify.log"
 $Sid     = "selftest-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 $Agent   = "selftest-agent-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 $Agent2  = "$Agent-long"
-$Turn    = Join-Path $Here "state\turns\$Sid"
+$Turn    = Join-Path $TestHome "state\turns\$Sid"
 $MetaDir = Join-Path $env:TEMP "claude-voice-$Sid"   # 説明（description）を置く偽のトランスクリプト置き場
 $OutputEncoding = New-Object Text.UTF8Encoding $false
 
@@ -33,7 +39,7 @@ function Invoke-Notify([string]$ev, [hashtable]$body) {
 # agentstop は直前の発話から debounceSeconds 以内だと黙る。検証の agentstop が続く・本物の
 # 報告が直前に鳴った、のどちらでも落ちるので、呼ぶ前に記録を古くしておく。
 function Reset-Debounce {
-  $f = Join-Path $Here "state\last_spoken"
+  $f = Join-Path $TestHome "state\last_spoken"
   if (Test-Path $f) { (Get-Item $f).LastWriteTime = (Get-Date).AddMinutes(-1) }
 }
 
@@ -119,8 +125,9 @@ catch {
   "NG  例外で中断: {0}" -f $_.Exception.Message
 }
 finally {
+  if ($TestHome -like "*voice-notify-test-*") { Remove-Item -LiteralPath $TestHome -Recurse -Force -ErrorAction SilentlyContinue }
   foreach ($a in $Agent, $Agent2) {
-    Remove-Item -LiteralPath (Join-Path $Here "state\agents\$a") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $TestHome "state\agents\$a") -Force -ErrorAction SilentlyContinue
   }
   Remove-Item -LiteralPath $Turn -Force -ErrorAction SilentlyContinue
   if ($MetaDir -like "*claude-voice-selftest-*") {

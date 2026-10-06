@@ -10,12 +10,18 @@ notify は自分の本文と一致したときだけ使う。
 ケース H（時間切れ）は summaryTimeoutSec（既定15秒）待つ。
 #>
 $Here    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Notify  = Join-Path $Here "notify.ps1"
-$Log     = Join-Path $Here "notify.log"
+$PluginRoot = Split-Path -Parent $Here
+# ホームは一時フォルダ（利用者の ~/.claude/voice-notify には触れない）。終わったら消す
+$TestHome = Join-Path $env:TEMP ("voice-notify-test-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+$env:VOICE_NOTIFY_HOME = $TestHome
+. (Join-Path $Here "_testlib.ps1")
+New-TestPhrases $TestHome (Join-Path $PluginRoot "config.default.json")
+$Notify  = Join-Path $PluginRoot "scripts\notify.ps1"
+$Log     = Join-Path $TestHome "notify.log"
 $Sid     = "selftest-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 $Agent   = "selftest-agent-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
-$Turn    = Join-Path $Here "state\turns\$Sid"
-$SumDir  = Join-Path $Here "state\summaries"
+$Turn    = Join-Path $TestHome "state\turns\$Sid"
+$SumDir  = Join-Path $TestHome "state\summaries"
 $Main    = Join-Path $SumDir "$Sid.json"
 $Sub     = Join-Path $SumDir ("{0}__{1}.json" -f $Sid, $Agent)
 $First   = "要約ファイルの受け渡しを読み上げ側で検証しているところです。"
@@ -52,7 +58,7 @@ function Start-LongTurn {
 }
 
 function Reset-Debounce {
-  $f = Join-Path $Here "state\last_spoken"
+  $f = Join-Path $TestHome "state\last_spoken"
   if (Test-Path $f) { (Get-Item $f).LastWriteTime = (Get-Date).AddMinutes(-1) }
 }
 
@@ -87,7 +93,7 @@ try {
   $sw.Stop()
   Check "B: ファイルが無ければ抜き出しを読む" $b `
     @('要約なし（mod 未読み込み、または要約しない判断）', "読み上げ: $First") 'タイムアウト'
-  CheckTrue ("B: 待ち時間が要約の時間切れより十分短い（{0:N1}秒）" -f $sw.Elapsed.TotalSeconds) ($sw.Elapsed.TotalSeconds -lt 10)
+  CheckTrue ("B: 要約の時間切れ（15秒）を待たない（{0:N1}秒）" -f $sw.Elapsed.TotalSeconds) ($sw.Elapsed.TotalSeconds -lt 15)
 
   # C: pending のあと done になる（mod が書き終えるのを待つ）
   Start-LongTurn
@@ -144,7 +150,8 @@ catch {
   "NG  例外で中断: {0}" -f $_.Exception.Message
 }
 finally {
-  Remove-Item -LiteralPath (Join-Path $Here "state\agents\$Agent") -Force -ErrorAction SilentlyContinue
+  if ($TestHome -like "*voice-notify-test-*") { Remove-Item -LiteralPath $TestHome -Recurse -Force -ErrorAction SilentlyContinue }
+  Remove-Item -LiteralPath (Join-Path $TestHome "state\agents\$Agent") -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $Turn, $Main, $Sub -Force -ErrorAction SilentlyContinue
 }
 

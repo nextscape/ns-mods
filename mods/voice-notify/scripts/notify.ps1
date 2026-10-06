@@ -28,36 +28,38 @@ param(
   [string]$Event = "stop",
   [switch]$NoDynamic,
   # 検証用。音を鳴らさず「何を読むはずだったか」だけをログに残す。
-  # 環境変数 CLAUDE_VOICE_DRYRUN=1 でも同じ（テスト中ずっと黙らせたいとき用）。
+  # 環境変数 VOICE_NOTIFY_DRYRUN=1 でも同じ（テスト中ずっと黙らせたいとき用）。
   [switch]$DryRun
 )
 
 # 通知を黙らせたいスクリプトから使う脱出口。
-#   $env:CLAUDE_VOICE_SUPPRESS = "1"
-if ($env:CLAUDE_VOICE_SUPPRESS -eq "1") { exit 0 }
+#   $env:VOICE_NOTIFY_SUPPRESS = "1"
+if ($env:VOICE_NOTIFY_SUPPRESS -eq "1") { exit 0 }
 
 $ErrorActionPreference = "Stop"
-$Here      = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Cfg       = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-. (Join-Path $Here "lib.ps1")    # Clear-SpeechText
+$Here      = Split-Path -Parent $MyInvocation.MyCommand.Path   # スクリプト（プラグイン側。更新で置き換わる）
+. (Join-Path $Here "lib.ps1")    # Get-VoiceHome / Initialize-VoiceHome / Clear-SpeechText
+$VHome     = Get-VoiceHome                                     # 設定と状態（ホーム。更新・撤去で消えない）
+Initialize-VoiceHome $VHome (Split-Path -Parent $Here)
+$Cfg       = Get-Content (Join-Path $VHome "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $Speaker   = $Cfg.speaker
 $SpeakerId = $Cfg.speakers.$Speaker.id
 $SummaryMax = [int]$Cfg.speech.summaryMaxChars   # 要約の上限。途中経過では Enter-Interim が縮める
 $SummaryMin = [int]$Cfg.speech.summaryMinChars   # これより短い本文は要約せずそのまま読む
 $Port      = $Cfg.enginePort
-$CacheDir  = Join-Path $Here "cache"
-$StateDir  = Join-Path $Here "state\agents"
-$TurnDir   = Join-Path $Here "state\turns"
-$MuteFile  = Join-Path $Here "state\mute"
-$SummaryDir = Join-Path $Here "state\summaries"    # mod（voice-summary）が要約を置く
-$LogPath   = Join-Path $Here "notify.log"
+$CacheDir  = Join-Path $VHome "cache"
+$StateDir  = Join-Path $VHome "state\agents"
+$TurnDir   = Join-Path $VHome "state\turns"
+$MuteFile  = Join-Path $VHome "state\mute"
+$SummaryDir = Join-Path $VHome "state\summaries"    # 要約 mod（hooks/register.ts）が要約を置く
+$LogPath   = Join-Path $VHome "notify.log"
 foreach ($d in @($CacheDir, $StateDir, $TurnDir)) {
   if (-not (Test-Path $d)) { New-Item -ItemType Directory $d -Force | Out-Null }
 }
 
 # ---------------------------------------------------------------- ログ
 # 何が起きたかを理由付きで残す。失敗しても無言のままにしない。
-if ($env:CLAUDE_VOICE_DRYRUN -eq "1") { $DryRun = $true }
+if ($env:VOICE_NOTIFY_DRYRUN -eq "1") { $DryRun = $true }
 
 function Write-Log([string]$Level, [string]$Msg) {
   if ($DryRun) { $Msg = "[DRY] " + $Msg }
@@ -93,11 +95,11 @@ function Enter-Interim {
 }
 
 function Get-Phrase([string]$name) {
-  $d = Join-Path $Here "phrases\$Speaker\$name"
+  $d = Join-Path $VHome "phrases\$Speaker\$name"
   $f = @(Get-ChildItem $d -Filter *.wav -ErrorAction SilentlyContinue)
   if (-not $f.Count) { return $null }
   # 直前と同じものを選ばない（「完了しました」の3連発を防ぐ）
-  $lastFile = Join-Path $Here ("state\last_phrase_" + $name.Replace('\', '_').Replace('/', '_'))
+  $lastFile = Join-Path $VHome ("state\last_phrase_" + $name.Replace('\', '_').Replace('/', '_'))
   $prev = ""
   if (Test-Path $lastFile) { $prev = (Get-Content -LiteralPath $lastFile -Raw).Trim() }
   $pool = @($f | Where-Object { $_.Name -ne $prev })
@@ -153,7 +155,7 @@ function Play-Wav([string]$Path) {
   if ($DryRun) {
     # どの話者のフレーズかが分かるよう phrases\<speaker>\... の形で残す
     $rel = $Path
-    if ($rel.StartsWith($Here)) { $rel = $rel.Substring($Here.Length + 1) }
+    if ($rel.StartsWith($VHome)) { $rel = $rel.Substring($VHome.Length + 1) }
     Write-Log "INFO" ("再生省略: {0} (頭に無音 +{1}ms)" -f $rel, $lead); return
   }
 
@@ -230,7 +232,7 @@ try {
   $raw = $reader.ReadToEnd()
   $reader.Dispose()
   if ($Cfg.debugPayload -and $raw) {
-    $d = Join-Path $Here "payloads"
+    $d = Join-Path $VHome "payloads"
     if (-not (Test-Path $d)) { New-Item -ItemType Directory $d | Out-Null }
     $pf = Join-Path $d ("{0}-{1}.json" -f $Event, (Get-Date -Format "yyyyMMdd-HHmmss-fff"))
     Set-Content -LiteralPath $pf -Value $raw -Encoding UTF8
@@ -643,7 +645,7 @@ if ($Event -eq "agentstop") {
   Enter-Interim
 
   # 連発抑制: 直前の発話から debounceSeconds 以内なら黙る
-  $stamp = Join-Path $Here "state\last_spoken"
+  $stamp = Join-Path $VHome "state\last_spoken"
   $deb = [double]($Cfg.subagent.debounceSeconds)
   if (Test-Path $stamp) {
     $since = ((Get-Date) - (Get-Item $stamp).LastWriteTime).TotalSeconds
@@ -688,11 +690,11 @@ if ($Event -eq "agentstop") {
     Synth-AndPlay $text
   } else {
     Write-Log "WARN" "説明も報告も取れないので定型フレーズにフォールバック"
-    Play-Wav (Join-Path $Here "phrases\$Speaker\agent\_default.wav")
+    Play-Wav (Join-Path $VHome "phrases\$Speaker\agent\_default.wav")
     $mx = [int]$Cfg.subagent.maxRemainSpoken
     $key = "$remain"
     if ($remain -gt $mx) { $key = "many" }
-    Play-Wav (Join-Path $Here "phrases\$Speaker\remain\$key.wav")
+    Play-Wav (Join-Path $VHome "phrases\$Speaker\remain\$key.wav")
   }
   exit 0
 }

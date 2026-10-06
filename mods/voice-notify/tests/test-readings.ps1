@@ -8,10 +8,10 @@ VOICEVOX ENGINE が動いていれば、置き換え後の文を audio_query に
 実際の読み（カナ）が期待どおりかも確かめる。
 #>
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Cfg  = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$Cfg  = Get-Content (Join-Path (Split-Path -Parent $Here) "config.default.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 
 # notify.ps1 から Convert-Reading の定義だけを取り出して読み込む
-$src = Get-Content (Join-Path $Here "notify.ps1") -Raw -Encoding UTF8
+$src = Get-Content (Join-Path (Split-Path -Parent $Here) "scripts\notify.ps1") -Raw -Encoding UTF8
 $m = [regex]::Match($src, '(?s)function Convert-Reading.*?\n\}')
 if (-not $m.Success) { throw "Convert-Reading が見つかりません" }
 Invoke-Expression $m.Value

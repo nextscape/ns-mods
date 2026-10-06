@@ -20,7 +20,9 @@ param(
 $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
-$Here = $PSScriptRoot
+. (Join-Path $PSScriptRoot "lib.ps1")
+$Here = Get-VoiceHome    # フレーズはホームの phrases\ に作る（プラグイン側には置かない）
+Initialize-VoiceHome $Here (Split-Path -Parent $PSScriptRoot)
 $Cfg  = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $VV   = "http://127.0.0.1:$($Cfg.enginePort)"
 $made = 0

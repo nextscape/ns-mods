@@ -6,9 +6,9 @@
 notify.ps1 の Get-LeadMs / Add-LeadSilence を読み込んで確かめる。
 #>
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Cfg  = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$Cfg  = Get-Content (Join-Path (Split-Path -Parent $Here) "config.default.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 
-$src = Get-Content (Join-Path $Here "notify.ps1") -Raw -Encoding UTF8
+$src = Get-Content (Join-Path (Split-Path -Parent $Here) "scripts\notify.ps1") -Raw -Encoding UTF8
 foreach ($name in "Get-LeadMs", "Add-LeadSilence") {
   $m = [regex]::Match($src, "(?s)function $name\b.*?\n\}")
   if (-not $m.Success) { throw "$name が見つかりません" }
@@ -40,9 +40,19 @@ function Read-Wav([byte[]]$b) {
 $ms = [int]$Cfg.playback.leadSilenceMs
 Check "設定がある" ($ms -gt 0) ("leadSilenceMs={0}" -f $ms)
 Check "毎回その長さを足す" ((Get-LeadMs) -eq $ms)
-# ---- 足し方（実物の定型フレーズで）
-$wavPath = Get-ChildItem (Join-Path $Here "phrases") -Recurse -Filter *.wav | Select-Object -First 1
-$orig = [IO.File]::ReadAllBytes($wavPath.FullName)
+# ---- 足し方（組み立てた wav で）
+# 実物のフレーズに頼らず、小さな wav（PCM 16bit mono 24kHz、0.1秒）をその場で組み立てる
+function New-TestWav {
+  $rate = 24000; $data = New-Object byte[] 4800
+  for ($k = 0; $k -lt $data.Length; $k++) { $data[$k] = [byte](($k * 7) % 251) }
+  $ms = New-Object IO.MemoryStream; $w = New-Object IO.BinaryWriter($ms)
+  $w.Write([Text.Encoding]::ASCII.GetBytes("RIFF")); $w.Write([int](36 + $data.Length)); $w.Write([Text.Encoding]::ASCII.GetBytes("WAVE"))
+  $w.Write([Text.Encoding]::ASCII.GetBytes("fmt ")); $w.Write([int]16); $w.Write([int16]1); $w.Write([int16]1)
+  $w.Write([int]$rate); $w.Write([int]($rate * 2)); $w.Write([int16]2); $w.Write([int16]16)
+  $w.Write([Text.Encoding]::ASCII.GetBytes("data")); $w.Write([int]$data.Length); $w.Write($data)
+  $w.Flush(); $ms.ToArray()
+}
+$orig = New-TestWav
 $o = Read-Wav $orig
 $out = Add-LeadSilence $orig 300
 if (-not $out) {

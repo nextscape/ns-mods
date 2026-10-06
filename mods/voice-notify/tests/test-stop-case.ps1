@@ -9,7 +9,7 @@
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # notify.ps1 から Get-StopCase の定義だけを取り出して読み込む
-$src = Get-Content (Join-Path $Here "notify.ps1") -Raw -Encoding UTF8
+$src = Get-Content (Join-Path (Split-Path -Parent $Here) "scripts\notify.ps1") -Raw -Encoding UTF8
 $m = [regex]::Match($src, '(?s)function Get-StopCase.*?\n\}')
 if (-not $m.Success) { throw "Get-StopCase が見つかりません" }
 Invoke-Expression $m.Value

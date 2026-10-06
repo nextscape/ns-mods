@@ -1,9 +1,9 @@
 ﻿# 文抽出ルールの検証（notify.ps1 の Pick-Sentence を読み込んで実行する）
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Cfg = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$Cfg = Get-Content (Join-Path (Split-Path -Parent $Here) "config.default.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 
 # notify.ps1 から Pick-Sentence の定義だけを取り出して読み込む
-$src = Get-Content (Join-Path $Here "notify.ps1") -Raw
+$src = Get-Content (Join-Path (Split-Path -Parent $Here) "scripts\notify.ps1") -Raw
 $m = [regex]::Match($src, '(?s)function Pick-Sentence.*?\n\}')
 if (-not $m.Success) { throw "Pick-Sentence が見つかりません" }
 Invoke-Expression $m.Value

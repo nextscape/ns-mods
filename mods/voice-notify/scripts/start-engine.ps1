@@ -8,7 +8,10 @@ GUI (VOICEVOX.exe) ではなく vv-engine\run.exe を直接起動する。
 #>
 param([switch]$Quiet)
 
-$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Scripts = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $Scripts "lib.ps1")
+$Here = Get-VoiceHome    # 設定とログはホーム
+Initialize-VoiceHome $Here (Split-Path -Parent $Scripts)
 $Cfg  = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $Port = $Cfg.enginePort
 $Log  = Join-Path $Here "notify.log"
