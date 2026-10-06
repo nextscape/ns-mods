@@ -70,7 +70,7 @@ function Write-PhraseTree($Node, [string]$Dir, [int]$Sid) {
 # ENGINE が動いていないと何も作れない
 try { Invoke-RestMethod -Uri "$VV/version" -TimeoutSec 5 | Out-Null }
 catch {
-  Write-Output "VOICEVOX ENGINE に接続できません ($VV)。start-engine.ps1 を先に実行してください。"
+  Write-Output "VOICEVOX ENGINE に接続できません ($VV)。/voice-notify:setup を実行して ENGINE を起動してください。"
   exit 1
 }
 

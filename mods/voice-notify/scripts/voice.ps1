@@ -19,7 +19,7 @@ $map = @{
 }
 $key = $Action.ToLower().Trim()
 if (-not $map.ContainsKey($key)) {
-  Write-Output "使い方: voice.ps1 [on|off|status]  （省略時は切替）"
+  Write-Output ("知らない引数です: {0}。使い方: /voice-notify:voice [on|off|status]（省略時は切替）" -f $Action)
   exit 1
 }
 & (Join-Path $PSScriptRoot "notify.ps1") -Event $map[$key]

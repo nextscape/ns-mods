@@ -15,10 +15,11 @@ function Get-VoiceHome {
 }
 
 # 初回: ホームを作り、同梱の既定設定をコピーする（利用者が書き換えた config.json は上書きしない）。
+# state/summaries は要約 mod の書き込み先。mod の $.fs にはフォルダを作る手段が無いので、ここで作っておく。
 # 初回のターンでは複数の hook が同時に動くので、一時ファイルに書いてから名前を変える
 # （書きかけの config.json を別の hook が読んで落ちないように）。先に置かれていればそれを使う
 function Initialize-VoiceHome([string]$VHome, [string]$PluginRoot) {
-  foreach ($d in @($VHome, (Join-Path $VHome "state"))) {
+  foreach ($d in @($VHome, (Join-Path $VHome "state"), (Join-Path $VHome "state\summaries"))) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory $d -Force | Out-Null }
   }
   $cfg = Join-Path $VHome "config.json"

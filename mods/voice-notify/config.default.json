@@ -5,6 +5,7 @@
   "pitchScale": 0.0,
   "intonationScale": 1.0,
   "enginePort": 50021,
+  "hotKey": "CTRL+ALT+M",
   "speakers": {
     "metan": {
       "id": 2,

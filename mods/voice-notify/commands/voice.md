@@ -8,4 +8,5 @@ allowed-tools: Bash(powershell:*)
 
 !`powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_PLUGIN_ROOT}/scripts/voice.ps1" $ARGUMENTS`
 
-上の実行結果を日本語1行でそのまま報告してください。補足や提案は不要です。
+上の実行結果を、日本語でそのまま短く報告してください（status のように複数行のときは行ごとに）。補足や提案は不要です。
+「知らない引数です」のときは、使える引数（on / off / status。省略時は切替）だけを伝えてください。

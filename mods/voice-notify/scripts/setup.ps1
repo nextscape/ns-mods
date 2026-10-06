@@ -2,9 +2,11 @@
 voice-notify の初期設定・診断・撤去。/voice-notify:setup から呼ばれる。何度実行しても同じ状態になる（冪等）。
 
   setup.ps1              導入（既に入っているものは飛ばす）
-  setup.ps1 -Doctor      診断だけ。鳴らないときの切り分けに使う
-  setup.ps1 -Remove      撤去（タスク・ホットキー）。ホーム（設定・フレーズ）は残す
-  setup.ps1 -Force       フレーズを作り直す（話速などを変えたとき）
+  setup.ps1 doctor       診断だけ。鳴らないときの切り分けに使う（-Doctor も可）
+  setup.ps1 remove       撤去（タスク・ホットキー）。ホーム（設定・フレーズ）は残す（-Remove も可）
+  setup.ps1 force        フレーズを作り直す（話速などを変えたとき）（-Force も可）
+
+/voice-notify:setup の引数はそのまま第1引数に渡る。知らない引数は導入せずに使い方を出して終える。
 
 hook と要約 mod はプラグインの hooks/hooks.json が登録する。settings.json には書き込まない。
 
@@ -21,21 +23,41 @@ hook と要約 mod はプラグインの hooks/hooks.json が登録する。sett
 管理者権限は不要。すべてユーザー領域で完結する。
 #>
 param(
+  [Parameter(Position = 0)][string]$Mode = "",
   [switch]$Remove,
   [switch]$Doctor,
   [switch]$Force,
-  [string]$HotKey = "CTRL+ALT+M"
+  [string]$HotKey = ""
 )
 
 $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+
+switch ($Mode.Trim().ToLowerInvariant()) {
+  ""       { }
+  "doctor" { $Doctor = $true }
+  "remove" { $Remove = $true }
+  "force"  { $Force = $true }
+  default {
+    Write-Output ("NG   知らない引数です: {0}" -f $Mode)
+    Write-Output "使い方: /voice-notify:setup [doctor|remove|force]（省略時は導入）"
+    exit 2
+  }
+}
 
 $Here       = $PSScriptRoot                    # スクリプト（プラグイン側）
 $PluginRoot = Split-Path -Parent $Here
 . (Join-Path $Here "lib.ps1")
 $VHome      = Get-VoiceHome                    # 設定と状態（ホーム）
 Initialize-VoiceHome $VHome $PluginRoot
-$Cfg        = Get-Content (Join-Path $VHome "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+# config.json は利用者が手で編集する。壊れていても診断と撤去は動くよう、既定の設定で代える
+$CfgError   = $null
+try { $Cfg = Get-Content (Join-Path $VHome "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json }
+catch {
+  $CfgError = $_.Exception.Message
+  $Cfg = Get-Content (Join-Path $PluginRoot "config.default.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+if (-not $HotKey) { $HotKey = if ($Cfg.hotKey) { [string]$Cfg.hotKey } else { "CTRL+ALT+M" } }
 $Port       = $Cfg.enginePort
 $BinDir     = Join-Path $VHome "bin"
 $Launch     = Join-Path $BinDir "launch.ps1"
@@ -98,12 +120,17 @@ function Get-LegacyRegistrations {
 # ================================================================ 撤去
 if ($Remove) {
   Step "撤去"
-  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-  Ok "スケジュールタスクを削除"
-  Remove-Item -LiteralPath $LinkPath -Force -ErrorAction SilentlyContinue
-  Ok "ホットキーのショートカットを削除"
+  if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Ok ("スケジュールタスク '{0}' を削除" -f $TaskName)
+  } else { Ok ("スケジュールタスク '{0}' は無い" -f $TaskName) }
+  if (Test-Path -LiteralPath $LinkPath) {
+    Remove-Item -LiteralPath $LinkPath -Force
+    Ok "ホットキーのショートカットを削除"
+  } else { Ok "ホットキーのショートカットは無い" }
   Write-Output ""
-  Write-Output "残したもの: $VHome（設定・フレーズ・ログ）。不要なら手で削除する。"
+  Write-Output "起動中の VOICEVOX ENGINE は止めていません（次のログオンからは起動しません）。"
+  Write-Output "残したもの: $VHome（設定・フレーズ・ログ・bin\launch.ps1）。不要なら手で削除する。"
   Write-Output "プラグイン本体は /plugin uninstall voice-notify で外す。"
   exit 0
 }
@@ -114,6 +141,11 @@ if ($Doctor) {
   Write-Output ("プラグイン: {0}" -f $PluginRoot)
   Write-Output ("ホーム:     {0}" -f $VHome)
 
+  Step "設定（config.json）"
+  if ($CfgError) {
+    Ng ("config.json を読めない（JSON の書き間違い）。以下は既定の設定で診断します: {0}" -f $CfgError)
+  } else { Ok (Join-Path $VHome "config.json") }
+
   Step "旧方式（claude-voice）の名残"
   $legacy = @(Get-LegacyRegistrations)
   if ($legacy.Count) {
@@ -123,14 +155,14 @@ if ($Doctor) {
 
   Step "VOICEVOX"
   $exe = Find-EngineExe
-  if ($exe) { Ok $exe } else { Ng "run.exe が見つからない。winget install HiroshibaKazuyuki.VOICEVOX.CPU" }
+  if ($exe) { Ok $exe } else { Ng "run.exe が見つからない。winget install --id HiroshibaKazuyuki.VOICEVOX.CPU -e で導入するか、config.json の enginePath に run.exe の絶対パスを書く" }
   if (Test-Engine) {
     Ok "ENGINE 応答あり (port $Port)"
     # 0.24 未満は辞書に無い英単語を1文字ずつ読む（Task → ティイエエエスケエ）
     try {
       $v = [string](Invoke-RestMethod -Uri "http://127.0.0.1:$Port/version" -TimeoutSec 3)
       if ([version]($v -replace '[^0-9.].*$', '') -lt [version]"0.24") {
-        Warn "ENGINE $v は英単語を1文字ずつ読む。0.24 以降を推奨（winget upgrade HiroshibaKazuyuki.VOICEVOX.CPU）"
+        Warn "ENGINE $v は英単語を1文字ずつ読む。0.24 以降を推奨（winget upgrade --id HiroshibaKazuyuki.VOICEVOX.CPU -e）"
       } else { Ok "ENGINE $v（英単語のカタカナ読みあり）" }
     } catch { Warn ("ENGINE のバージョンを判定できない: {0}" -f $_.Exception.Message) }
   } else { Ng "ENGINE が応答しない (port $Port)。/voice-notify:setup を実行" }
@@ -198,6 +230,10 @@ Write-Output "voice-notify を導入します"
 Write-Output ("ホーム: {0}" -f $VHome)
 
 Step "1. ホーム"
+if ($CfgError) {
+  Ng ("config.json を読めません（JSON の書き間違い）。直してから、もう一度実行してください: {0}" -f $CfgError)
+  exit 1
+}
 Ok ("config.json: {0}" -f (Join-Path $VHome "config.json"))
 $legacy = @(Get-LegacyRegistrations)
 foreach ($l in $legacy) { Warn ("旧方式が残っている（二重に鳴る）: {0}。旧 claude-voice の setup.ps1 -Remove で外す" -f $l) }

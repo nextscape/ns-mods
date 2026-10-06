@@ -427,7 +427,7 @@ function Test-EngineAlive {
 
 # ---------------------------------------- 要約（mod: hooks/register.ts）
 # 1文目の抜き出しでは「何をしたか」が伝わらないことが多いので、応答全体の要約を読む。
-# 要約は mod（mod/）が turn.complete で Haiku に作らせ、要約するときだけ state/summaries/ に置く。
+# 要約は mod（hooks/register.ts）が turn.complete で Haiku に作らせ、要約するときだけ state/summaries/ に置く。
 #   <session_id>.json / <session_id>__<agent_id>.json
 #   {"v":1,"status":"pending|done|error","len":<本文の文字数>,"head":<本文の先頭16文字>,"text":…,"reason":…,"ms":…}
 # len / head で「どの応答の要約か」を確かめる（時刻では推測しない）。前のターンの残りや、

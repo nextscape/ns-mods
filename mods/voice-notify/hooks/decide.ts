@@ -105,11 +105,16 @@ export function voiceHome(envHome: string | undefined, userProfile: string | und
   return base ? `${norm(base)}/.claude/voice-notify` : null
 }
 
+// 先頭の BOM（U+FEFF）を落とす。Windows PowerShell 5.1 は BOM 付きで書く
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
 export function parseConfig(text: string): VoiceConfig {
-  return JSON.parse(text.replace(/^﻿/, '')) as VoiceConfig
+  return JSON.parse(stripBom(text)) as VoiceConfig
 }
 
 export function isRunningAgent(content: string, mtimeMs: number, now: number, sessionId: string): boolean {
   if (now - mtimeMs > AGENT_STALE_MS) return false
-  return content.replace(/^﻿/, '').trim() === sessionId
+  return stripBom(content).trim() === sessionId
 }
