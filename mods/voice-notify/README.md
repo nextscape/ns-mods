@@ -4,7 +4,7 @@
 > (turn finished, waiting for permission, subagent reports, errors). Long turns are summarized
 > into one spoken sentence by Claude Haiku via an in-session mod (`$.model.complete`) —
 > no extra API key, and nothing is added to your conversation context. Windows 10/11 and VOICEVOX are required.
-> Install: `/plugin install voice-notify --marketplace nextscape/ns-mods`, then run `/voice-notify:setup`.
+> Install: `/plugin marketplace add nextscape/ns-mods`, `/plugin install voice-notify@nextscape-mods`, then run `/voice-notify:setup`.
 
 Claude Code のターン完了・許可待ち・サブエージェントの報告・エラーなどを、VOICEVOX の声で知らせます。
 作業時間の長いターンは、応答を **Claude Haiku** で1文に要約して読み上げます。
@@ -23,10 +23,11 @@ Claude Code のターン完了・許可待ち・サブエージェントの報�
 
 ## 導入
 
-1. プラグインを入れる
+1. マーケットプレイスを追加し、プラグインを入れる
 
    ```
-   /plugin install voice-notify --marketplace nextscape/ns-mods
+   /plugin marketplace add nextscape/ns-mods
+   /plugin install voice-notify@nextscape-mods
    ```
 
 2. 初期設定を行う（VOICEVOX が無ければ導入コマンドを案内して止まります）
@@ -40,7 +41,7 @@ Claude Code のターン完了・許可待ち・サブエージェントの報�
    | 1 | ホーム（`~/.claude/voice-notify/`）の用意。`config.json` が無ければ既定をコピー |
    | 2 | VOICEVOX の確認（無ければ `winget install --id HiroshibaKazuyuki.VOICEVOX.CPU -e` を案内） |
    | 3 | VOICEVOX ENGINE の起動 |
-   | 4 | 定型フレーズの生成 |
+   | 4 | 定型フレーズの生成（裏で実行。初回は数分。進み具合は `/voice-notify:setup doctor` で確認） |
    | 5 | ログオン時に ENGINE を起動するタスクの登録 |
    | 6 | ミュート切替のホットキー（既定 `Ctrl+Alt+M`。どのウィンドウからでも効く） |
 

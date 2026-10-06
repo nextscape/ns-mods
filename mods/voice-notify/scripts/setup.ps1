@@ -209,13 +209,23 @@ else {
 }
 
 Step "4. 定型フレーズ"
-$genArgs = @{ Quiet = $true }
-if (-not $Force) { $genArgs["IfMissing"] = $true }
-& (Join-Path $Here "gen-phrases.ps1") @genArgs | ForEach-Object { Ok $_ }
+# 初回は2話者ぶん約150回の合成で数分かかり、コマンドの実行時間の上限を超えうる。
+# 裏で生成させて先に進む（足りないものだけ作るので、何度実行してもよい）
+$genArgs = "-Quiet"
+if (-not $Force) { $genArgs += " -IfMissing" }
+$missing = @($Cfg.speakers.PSObject.Properties.Name | Where-Object {
+  -not @(Get-ChildItem (Join-Path $VHome "phrases\$_") -Recurse -Filter *.wav -ErrorAction SilentlyContinue).Count })
+if ($Force -or $missing.Count) {
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList `
+    ("-NoProfile -ExecutionPolicy Bypass -File `"{0}`" {1}" -f (Join-Path $Here "gen-phrases.ps1"), $genArgs) | Out-Null
+  Ok "裏で生成を始めました（初回は数分）。進み具合は /voice-notify:setup doctor の「定型フレーズ」で確認できます"
+} else { Ok "生成済み（作り直すときは setup.ps1 -Force）" }
 
 Step "5. ログオン時に ENGINE を起動"
 if (-not (Test-Path $BinDir)) { New-Item -ItemType Directory $BinDir -Force | Out-Null }
 Copy-Item (Join-Path $Here "launch.ps1") $Launch -Force
+# launch.ps1 が installed_plugins.json で見つけられないとき（手元のフォルダから入れた場合など）の手がかり
+[IO.File]::WriteAllText((Join-Path $BinDir "plugin-root.txt"), $PluginRoot, (New-Object Text.UTF8Encoding $false))
 # run.exe を直接起動するとコンソール窓が残るので、PowerShell を隠して噛ませる
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
   -Argument ("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"{0}`" -Action engine" -f $Launch)
