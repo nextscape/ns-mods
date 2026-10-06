@@ -16,7 +16,7 @@ Claude Code hook から呼ばれる音声通知スクリプト (VOICEVOX 版)。
   speakerInterim 中間報告。agentstop と、サブエージェントを待ったまま終えた stop
   speaker        それ以外（最終報告・許可待ち・入力待ち・エラーなど）
 
-操作（voice.cmd / スラッシュコマンドから。stdin を読まない）:
+操作（/voice-notify:voice とホットキーから。stdin を読まない）:
   mute / unmute / toggle / status
 
 VOICEVOX ENGINE が起動していなくても定型フレーズは鳴る（縮退動作）。
@@ -425,7 +425,7 @@ function Test-EngineAlive {
   catch { return $false }
 }
 
-# ---------------------------------------- 要約（mod: voice-summary）
+# ---------------------------------------- 要約（mod: hooks/register.ts）
 # 1文目の抜き出しでは「何をしたか」が伝わらないことが多いので、応答全体の要約を読む。
 # 要約は mod（mod/）が turn.complete で Haiku に作らせ、要約するときだけ state/summaries/ に置く。
 #   <session_id>.json / <session_id>__<agent_id>.json
@@ -787,7 +787,7 @@ if (-not $cannedPath -and $brief) { $cannedPath = Get-Phrase "stop\$pcase" }
 if (-not $cannedPath -and $Event -eq "stop") { $cannedPath = Get-Phrase "stop\$case" }
 if (-not $cannedPath -and $Event -eq "stop") { $cannedPath = Get-Phrase "stop" }
 if (-not $cannedPath) {
-  Write-Log "WARN" "定型フレーズが未生成。gen-phrases.ps1 を実行のこと"
+  Write-Log "WARN" "定型フレーズが未生成。/voice-notify:setup を実行のこと"
   $cannedPath = Get-Phrase "notification"
 }
 

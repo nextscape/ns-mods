@@ -71,13 +71,24 @@ function Find-EngineExe {
 
 # 旧方式（claude-voice。settings.json に hook と CLAUDE_CODE_PLUGIN_DIRS を直接書いていた）の名残。
 # 残っていると公開版と二重に鳴る
-function Get-LegacyRegistrations {
+# ~/.claude 配下のファイルに残る名残（$ClaudeDir を差し替えてテストできるように分けてある）
+function Get-LegacyFiles([string]$ClaudeDir) {
   $found = @()
-  if (Test-Path $Settings) {
-    $raw = Get-Content $Settings -Raw -Encoding UTF8
+  $settingsFile = Join-Path $ClaudeDir "settings.json"
+  if (Test-Path $settingsFile) {
+    $raw = Get-Content $settingsFile -Raw -Encoding UTF8
     if ($raw -match 'claude-voice[\\/]+notify\.ps1') { $found += "settings.json の hook（claude-voice\notify.ps1）" }
     if ($raw -match '"CLAUDE_CODE_PLUGIN_DIRS"\s*:\s*"[^"]*claude-voice') { $found += "settings.json の CLAUDE_CODE_PLUGIN_DIRS（claude-voice\mod）" }
   }
+  $oldCmd = Join-Path $ClaudeDir "commands\voice.md"
+  if ((Test-Path $oldCmd) -and ((Get-Content $oldCmd -Raw -Encoding UTF8) -match 'claude-voice')) {
+    $found += "旧 /voice コマンド（commands\voice.md）"
+  }
+  return $found
+}
+
+function Get-LegacyRegistrations {
+  $found = @(Get-LegacyFiles (Split-Path -Parent $Settings))
   if (Get-ScheduledTask -TaskName "VOICEVOX ENGINE (claude-voice)" -ErrorAction SilentlyContinue) { $found += "タスク 'VOICEVOX ENGINE (claude-voice)'" }
   $oldLink = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Claude 音声通知 ミュート切替.lnk"
   if (Test-Path $oldLink) { $found += "ホットキーのショートカット（Claude 音声通知 ミュート切替）" }

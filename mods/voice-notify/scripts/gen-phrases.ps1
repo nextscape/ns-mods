@@ -21,9 +21,9 @@ $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
 . (Join-Path $PSScriptRoot "lib.ps1")
-$Here = Get-VoiceHome    # フレーズはホームの phrases\ に作る（プラグイン側には置かない）
-Initialize-VoiceHome $Here (Split-Path -Parent $PSScriptRoot)
-$Cfg  = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$VHome = Get-VoiceHome    # フレーズはホームの phrases\ に作る（プラグイン側には置かない）
+Initialize-VoiceHome $VHome (Split-Path -Parent $PSScriptRoot)
+$Cfg  = Get-Content (Join-Path $VHome "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $VV   = "http://127.0.0.1:$($Cfg.enginePort)"
 $made = 0
 $kept = 0
@@ -44,7 +44,7 @@ function Write-Phrase([string]$Path, [string]$Text, [int]$Sid) {
 
   $script:made++
   if (-not $Quiet) {
-    Write-Output ("  {0,-42} {1}" -f $Path.Substring($Here.Length + 1), $Text)
+    Write-Output ("  {0,-42} {1}" -f $Path.Substring($VHome.Length + 1), $Text)
   }
 }
 
@@ -80,7 +80,7 @@ foreach ($spk in $Cfg.speakers.PSObject.Properties.Name) {
 
   # イベント別の定型フレーズ（入れ子は Write-PhraseTree が再帰でたどる）
   foreach ($event in $Cfg.phrases.PSObject.Properties.Name) {
-    Write-PhraseTree $Cfg.phrases.$event (Join-Path $Here ("phrases\{0}\{1}" -f $spk, $event)) $sid
+    Write-PhraseTree $Cfg.phrases.$event (Join-Path $VHome ("phrases\{0}\{1}" -f $spk, $event)) $sid
   }
   if (-not $SA) { continue }
 
@@ -90,17 +90,17 @@ foreach ($spk in $Cfg.speakers.PSObject.Properties.Name) {
     foreach ($k in $SA.labels.PSObject.Properties.Name) { $labels[$k] = $SA.labels.$k }
   }
   foreach ($k in $labels.Keys) {
-    Write-Phrase (Join-Path $Here ("phrases\{0}\agent\{1}.wav" -f $spk, $k)) ("{0}が完了しました。" -f $labels[$k]) $sid
+    Write-Phrase (Join-Path $VHome ("phrases\{0}\agent\{1}.wav" -f $spk, $k)) ("{0}が完了しました。" -f $labels[$k]) $sid
   }
 
   # 同時に走っている他エージェントの数。
   # hook は「これから何件起動するか」を知らないので「残り」とは言えない。
   $mx = [int]$SA.maxRemainSpoken
-  Write-Phrase (Join-Path $Here ("phrases\{0}\remain\0.wav" -f $spk)) "実行中はありません。" $sid
+  Write-Phrase (Join-Path $VHome ("phrases\{0}\remain\0.wav" -f $spk)) "実行中はありません。" $sid
   for ($n = 1; $n -le $mx; $n++) {
-    Write-Phrase (Join-Path $Here ("phrases\{0}\remain\{1}.wav" -f $spk, $n)) ("実行中は{0}件です。" -f $n) $sid
+    Write-Phrase (Join-Path $VHome ("phrases\{0}\remain\{1}.wav" -f $spk, $n)) ("実行中は{0}件です。" -f $n) $sid
   }
-  Write-Phrase (Join-Path $Here ("phrases\{0}\remain\many.wav" -f $spk)) "実行中は多数あります。" $sid
+  Write-Phrase (Join-Path $VHome ("phrases\{0}\remain\many.wav" -f $spk)) "実行中は多数あります。" $sid
 }
 
 Write-Output ("完了: 生成 {0} 件 / 既存流用 {1} 件" -f $made, $kept)

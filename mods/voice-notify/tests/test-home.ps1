@@ -37,6 +37,25 @@ try {
     powershell -NoProfile -ExecutionPolicy Bypass -File $Notify -Event status | Out-Null
   CheckTrue "書き換えた config.json を上書きしない" ((Get-Content $cfg -Raw -Encoding UTF8 | ConvertFrom-Json).speedScale -eq 1.77)
 
+  # 末尾の区切りは落とす（mod の voiceHome と同じ。ログの相対表示がずれない）
+  $lib = Get-Content (Join-Path (Split-Path -Parent $Here) "scripts\lib.ps1") -Raw -Encoding UTF8
+  . ([scriptblock]::Create([regex]::Match($lib, '(?s)function Get-VoiceHome\b.*?\n\}').Value))
+  $env:VOICE_NOTIFY_HOME = "  $TestHome\ "
+  CheckTrue "VOICE_NOTIFY_HOME の前後の空白と末尾の \ を落とす" ((Get-VoiceHome) -eq $TestHome)
+  $env:VOICE_NOTIFY_HOME = $TestHome
+
+  # 初回（config.json が無い）に hook が同時に動いても、書きかけの config.json を読んで落ちない
+  Remove-Item -LiteralPath $TestHome -Recurse -Force
+  $procs = @(1..5 | ForEach-Object {
+    Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList `
+      ("-NoProfile -ExecutionPolicy Bypass -File `"{0}`" -Event status" -f $Notify)
+  })
+  $procs | ForEach-Object { $_.WaitForExit(60000) | Out-Null }
+  CheckTrue "同時に5つ起動しても全部が正常終了する" (@($procs | Where-Object { $_.ExitCode -ne 0 }).Count -eq 0)
+  $ok = $true; try { Get-Content (Join-Path $TestHome "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json | Out-Null } catch { $ok = $false }
+  CheckTrue "コピーされた config.json は壊れていない" $ok
+  CheckTrue "コピーの途中のファイルを残さない" (@(Get-ChildItem $TestHome -Filter "config.json*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "config.json" }).Count -eq 0)
+
   CheckTrue "利用者のホームに触れない" ((Test-Path $RealHome) -eq $RealBefore)
 }
 catch { $ng++; "NG  例外で中断: {0}" -f $_.Exception.Message }

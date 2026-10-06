@@ -55,6 +55,7 @@ Claude Code のターン完了・許可待ち・サブエージェントの報�
 | `/voice-notify:voice on` / `off` / `status` | 再開 / 停止 / 状態表示 |
 | `/voice-notify:setup doctor` | 診断（鳴らないときの切り分け） |
 | `/voice-notify:setup remove` | タスクとホットキーの撤去（ホームは残す） |
+| `/voice-notify:setup force` | 定型フレーズを作り直す（話者・話速を変えたとき） |
 
 マイクを使っている間（会議・通話中）は自動で黙ります（`mute.whenMicInUse`）。
 
@@ -71,12 +72,12 @@ Claude Code のターン完了・許可待ち・サブエージェントの報�
 
 ## 設定
 
-設定は **`~/.claude/voice-notify/config.json`** を直接編集します（環境変数 `VOICE_NOTIFY_HOME` で場所を変えられます）。
+設定は **`~/.claude/voice-notify/config.json`** を直接編集します（環境変数 `VOICE_NOTIFY_HOME` に**絶対パス**を指定すると場所を変えられます）。
 プラグインを更新・アンインストールしても、このフォルダは消えません。
 
 | 変えたいもの | キー |
 |---|---|
-| 話者・話速・抑揚 | `speaker` / `speakerInterim` / `speedScale` / `pitchScale` / `intonationScale`（変えたら `/voice-notify:setup` でフレーズを作り直す。`-Force` 相当は `setup.ps1 -Force`） |
+| 話者・話速・抑揚 | `speaker` / `speakerInterim` / `speedScale` / `pitchScale` / `intonationScale`（変えたら `/voice-notify:setup force` でフレーズを作り直す） |
 | 要約をやめる | `speech.summarize` を `false` |
 | 要約の文体 | `speech.summaryPrompt`（行の配列。良い例・悪い例を並べると効く。`{maxChars}` は上限の文字数に置換） |
 | 要約の長さ・待ち時間 | `speech.summaryMaxChars` / `speech.interimMaxChars` / `speech.summaryTimeoutSec` |
@@ -133,7 +134,7 @@ Claude Code
 ```
 claude plugin test     mods/voice-notify          # 要約 mod のテスト（tests/*.test.ts）
 claude plugin validate mods/voice-notify          # ロード時の検査
-powershell -File mods/voice-notify/tests/test-summary-handoff.ps1   # PowerShell 側のテスト（tests/test-*.ps1）
+powershell -NoProfile -ExecutionPolicy Bypass -File mods/voice-notify/tests/test-summary-handoff.ps1   # PowerShell 側のテスト（tests/test-*.ps1）
 ```
 
 - PowerShell のテストはホームを一時フォルダにして動き、利用者の `~/.claude/voice-notify/` には触れません

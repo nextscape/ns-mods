@@ -73,7 +73,7 @@ async function finish($: Engine, o: { answer?: string; durationMs?: number; agen
   })
 }
 
-describe('voice-summary', () => {
+describe('voice-notify summary mod', () => {
   test('a long main turn writes pending, then done with the Haiku summary', async ($, on) => {
     const { clock, seen } = world(on)
     const result = await finish($)

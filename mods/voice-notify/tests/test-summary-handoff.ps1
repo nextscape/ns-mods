@@ -1,5 +1,5 @@
 ﻿<#
-要約ファイル（mod: voice-summary が書く）を notify.ps1 が正しく受け取るかの検証。
+要約ファイル（要約 mod の hooks/register.ts が書く）を notify.ps1 が正しく受け取るかの検証。
 notify.ps1 を -DryRun で実際に呼ぶ。音は鳴らさない。架空の session_id を使う。
 
   .\test-summary-handoff.ps1

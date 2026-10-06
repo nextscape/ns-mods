@@ -10,11 +10,11 @@ param([switch]$Quiet)
 
 $Scripts = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $Scripts "lib.ps1")
-$Here = Get-VoiceHome    # 設定とログはホーム
-Initialize-VoiceHome $Here (Split-Path -Parent $Scripts)
-$Cfg  = Get-Content (Join-Path $Here "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$VHome = Get-VoiceHome    # 設定とログはホーム
+Initialize-VoiceHome $VHome (Split-Path -Parent $Scripts)
+$Cfg  = Get-Content (Join-Path $VHome "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $Port = $Cfg.enginePort
-$Log  = Join-Path $Here "notify.log"
+$Log  = Join-Path $VHome "notify.log"
 
 function Say([string]$msg) {
   try {
