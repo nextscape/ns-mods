@@ -1,5 +1,5 @@
 ﻿<#
-音声通知の入り口。/voice スラッシュコマンドと voice.cmd から呼ばれる。
+音声通知のミュート操作の入り口。/voice-notify:voice から呼ばれる。
 
   voice.ps1            切替
   voice.ps1 on         再開
