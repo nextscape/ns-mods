@@ -1,0 +1,12 @@
+# エンジンが mod を読み込んだときに生成する（編集しない・載せない）
+mods/*/.claude-plugin/types/
+mods/*/tsconfig.json
+
+# mod が手元に作る状態・生成物
+mods/*/state/
+mods/*/cache/
+*.log
+
+node_modules/
+.DS_Store
+Thumbs.db

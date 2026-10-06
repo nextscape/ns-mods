@@ -1,0 +1,10 @@
+{
+  "name": "nextscape-mods",
+  "owner": {
+    "name": "Nextscape Inc."
+  },
+  "metadata": {
+    "description": "Nextscape が公開する Claude Code mod（関数フックのプラグイン）集"
+  },
+  "plugins": []
+}
