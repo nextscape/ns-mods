@@ -20,7 +20,7 @@ $Sid     = "selftest-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 $Agent   = "selftest-agent-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
 $Agent2  = "$Agent-long"
 $Turn    = Join-Path $TestHome "state\turns\$Sid"
-$MetaDir = Join-Path $env:TEMP "claude-voice-$Sid"   # 説明（description）を置く偽のトランスクリプト置き場
+$MetaDir = Join-Path $env:TEMP "voice-notify-$Sid"   # 説明（description）を置く偽のトランスクリプト置き場
 $OutputEncoding = New-Object Text.UTF8Encoding $false
 
 # 1回呼んで、その呼び出しが残したログ（[DRY] 付き）だけを返す。
@@ -130,7 +130,7 @@ finally {
     Remove-Item -LiteralPath (Join-Path $TestHome "state\agents\$a") -Force -ErrorAction SilentlyContinue
   }
   Remove-Item -LiteralPath $Turn -Force -ErrorAction SilentlyContinue
-  if ($MetaDir -like "*claude-voice-selftest-*") {
+  if ($MetaDir -like "*voice-notify-selftest-*") {
     Remove-Item -LiteralPath $MetaDir -Recurse -Force -ErrorAction SilentlyContinue
   }
 }

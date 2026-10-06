@@ -163,7 +163,7 @@ function Play-Wav([string]$Path) {
   # そのまま鳴らすと音が重なって聞き取れないので、再生だけは1つずつ通す。
   $mx = $null
   $held = $false
-  try { $mx = New-Object Threading.Mutex($false, "claude-voice-playback") } catch { }
+  try { $mx = New-Object Threading.Mutex($false, "voice-notify-playback") } catch { }
   if ($mx) {
     try { $held = $mx.WaitOne(20000) }
     catch [Threading.AbandonedMutexException] { $held = $true }   # 前の保持者が異常終了。所有権は得ている
