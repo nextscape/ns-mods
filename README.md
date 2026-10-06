@@ -4,12 +4,10 @@ Nextscape が公開する Claude Code の mod 集です。mod は、関数フッ
 
 ## mod 一覧
 
-準備中です。次の mod を追加する予定です。
-
 | mod | 概要 |
 |---|---|
 | effort-router | プロンプトごとに effort（low / medium / high / xhigh）を自動で選ぶ。モデルは変えない。Opus / Sonnet 5.5 以降と Fable / Mythos 5.1 以降が対象（Claude Code 2.1.291 で確認） |
-| claude-voice | VOICEVOX による音声通知。長い応答は Haiku で要約して読み上げる（Windows） |
+| voice-notify | VOICEVOX による音声通知。長い応答は Haiku で要約して読み上げる（Windows。Claude Code 2.1.291 で確認） |
 
 ## 導入
 
