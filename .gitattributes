@@ -1,0 +1,2 @@
+# 改行は環境の Git 設定（core.autocrlf）によらず LF にそろえる
+* text=auto eol=lf
