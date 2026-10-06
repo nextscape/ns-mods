@@ -8,6 +8,11 @@
   },
   "plugins": [
     {
+      "name": "effort-router",
+      "source": "./mods/effort-router",
+      "description": "プロンプトごとに effort（low / medium / high / xhigh）を自動で選ぶ（Opus / Sonnet 5.5 以降）"
+    },
+    {
       "name": "voice-notify",
       "source": "./mods/voice-notify",
       "description": "VOICEVOX による音声通知と Haiku 要約（Windows）"

@@ -1,0 +1,11 @@
+{
+  "name": "effort-router",
+  "version": "0.7.0",
+  "description": "Picks low/medium/high/xhigh effort per prompt for Opus/Sonnet 5.5+ and Fable/Mythos 5.1+ by how uncertain and costly the work is, raising it mid-turn when a turn runs long; a typed /effort applies at once",
+  "author": {
+    "name": "Nextscape Inc."
+  },
+  "license": "MIT",
+  "repository": "https://github.com/nextscape/ns-mods",
+  "types": "./types/index.d.ts"
+}
