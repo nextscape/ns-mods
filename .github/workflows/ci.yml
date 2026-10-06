@@ -1,0 +1,56 @@
+# マーケットプレイスと各 mod の検査・テスト。
+# voice-notify の PowerShell テストが Windows PowerShell 5.1 を使うので、Windows で動かす。
+# claude plugin validate / test はログインなしで動く。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate marketplace and mods
+        shell: pwsh
+        run: |
+          claude --version
+          claude plugin validate .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($mod in Get-ChildItem mods -Directory) {
+            claude plugin validate $mod.FullName
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      - name: Test mods (tests/*.test.ts)
+        shell: pwsh
+        run: |
+          foreach ($mod in Get-ChildItem mods -Directory) {
+            if (-not (Get-ChildItem (Join-Path $mod.FullName "tests") -Filter *.test.ts -ErrorAction SilentlyContinue)) { continue }
+            claude plugin test $mod.FullName
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      - name: Test voice-notify scripts (tests/test-*.ps1, Windows PowerShell 5.1)
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($t in Get-ChildItem mods/voice-notify/tests -Filter test-*.ps1) {
+            Write-Host "== $($t.Name)"
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File $t.FullName
+            if ($LASTEXITCODE) { $failed += $t.Name }
+          }
+          if ($failed) { Write-Host "failed: $($failed -join ', ')"; exit 1 }
