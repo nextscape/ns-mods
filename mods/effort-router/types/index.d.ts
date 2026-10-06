@@ -4,7 +4,7 @@ export type Level = 'low' | 'medium' | 'high' | 'xhigh'
 export type Option = { key: string; text: string }
 
 // What one main-thread turn left behind, for judging the next one.
-// `options` and `asks` are absent in state saved before 0.4.
+// `options` and `asks` may be absent in state an older version saved.
 export type TurnSignals = {
   level: Level | null
   steps: number

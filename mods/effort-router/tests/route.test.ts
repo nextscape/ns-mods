@@ -156,6 +156,17 @@ describe('route', () => {
     expect(optionsOf('1.5倍に増えました')).toEqual([])
   })
 
+  test('options survive CRLF; numbered lines inside a code block are not options', () => {
+    expect(optionsOf('どちらにしますか。\r\n1. 残す\r\n2. 消す\r\n')).toEqual([
+      { key: '1', text: '残す' },
+      { key: '2', text: '消す' },
+    ])
+    expect(optionsOf('1. 残す\n2. 消す\n\n```text\n1. 手順の一行目\n2. 手順の二行目\n```')).toEqual([
+      { key: '1', text: '残す' },
+      { key: '2', text: '消す' },
+    ])
+  })
+
   test('a reply picks offered options however it is phrased', () => {
     const options = optionsOf(ANSWER)
     expect(picked('2', options)?.map(one => one.key)).toEqual(['2'])

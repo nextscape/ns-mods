@@ -3,7 +3,7 @@ import type { Level, Option, TurnSignals } from '../types'
 // Pure routing logic: what the classifier reads, and how its answer becomes
 // the turn's effort. No `$` here, so tests and the eval share it as is.
 
-// Tuned for Claude Opus 5.5, whose default is medium and whose medium
+// Tuned for Claude Opus 5.5 (and used for every routed model), whose default is medium and whose medium
 // already does ordinary multistep coding well; max is never picked.
 export const LEVELS: readonly Level[] = ['low', 'medium', 'high', 'xhigh']
 
@@ -56,8 +56,8 @@ export function asLevel(effort: string | number | undefined): Level | null {
 }
 
 // Routed: Opus and Sonnet from 5.5 on, Fable and Mythos from 5.1 on, the
-// models that keep the prompt cache across effort changes. The rubric is
-// tuned for Opus 5.5.
+// models that keep the prompt cache across effort changes. A later version
+// (Opus 6, Sonnet 5.6) is routed too. The rubric is tuned for Opus 5.5.
 const ROUTED_FROM: Readonly<Record<string, number>> = { opus: 5.5, sonnet: 5.5, fable: 5.1, mythos: 5.1 }
 
 export function isRouted(model: string): boolean {
@@ -100,6 +100,7 @@ export function escalate(level: Level, steps: number, errors: number): Level {
 // Code and stack traces become markers: the signal stays, the tokens go.
 export function compact(text: string): string {
   return text
+    .replace(/\r\n?/g, '\n')
     .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang: string, body: string) => {
       const lines = body.split('\n').filter(Boolean).length
       return `[code${lang ? `: ${lang}` : ''} ${lines} lines]`
@@ -179,9 +180,11 @@ export function decide(
   return { level: judged, judged, why }
 }
 
-// Full-width digits and letters read as ASCII; a circled number as "1.".
+// CRLF reads as LF; full-width digits and letters as ASCII; a circled
+// number as "1.".
 function normalize(text: string): string {
   return text
+    .replace(/\r\n?/g, '\n')
     .replace(/[０-９Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .replace(/[①-⑳]/g, c => `${c.charCodeAt(0) - 0x2460 + 1}.`)
 }
@@ -195,11 +198,18 @@ const OPTION_LINE = /^\s*(?:[-*+]\s+)?(?:\*\*)?(?:案|option\s*)?[(（]?(\d{1,2}
 const OPTION_ROW = /^\s*\|\s*(?:\*\*)?(\d{1,2}|[A-Za-z])(?:\*\*)?\s*\|(.+)$/
 
 // The last run of numbered or lettered lines in the answer (a list, or the
-// rows of a table): a new run starts at 1 or a.
+// rows of a table): a new run starts at 1 or a. Lines inside a code block
+// are code, not options.
 export function optionsOf(answer: string): Option[] {
   let run: Option[] = []
   let last: Option[] = []
+  let inCode = false
   for (const raw of normalize(answer).split('\n')) {
+    if (/^\s*(```|~~~)/.test(raw)) {
+      inCode = !inCode
+      continue
+    }
+    if (inCode) continue
     const found = OPTION_LINE.exec(raw) ?? OPTION_ROW.exec(raw)
     if (!found) continue
     const key = found[1]!.toLowerCase()

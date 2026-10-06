@@ -25,16 +25,17 @@ import {
 } from './route'
 import type { Asked, Decision, Route } from './route'
 
-// Picks Claude Opus 5.5's effort per prompt: low / medium / high / xhigh,
+// Picks the main thread's effort per prompt: low / medium / high / xhigh,
 // judged from the request and the previous turn's signals. A reply that
 // picks an offered option ("2") is judged by that option's text; a short
 // reply to a question is judged against the question; an AskUserQuestion
 // answer is judged mid-turn the same way. A turn that runs long or hits
 // errors goes up one level, so a judgment that was too low corrects itself.
-// A background task's notice keeps the level before it. Other models are
-// left alone. The model is never changed; on Opus 5.5 Claude Code keeps the
-// prompt cache across effort changes. While on, it overrides the built-in
-// /effort every turn; to pin a level, turn it off and use /effort.
+// A background task's notice keeps the level before it. Only the routed
+// models (isRouted: Opus and Sonnet 5.5+, Fable and Mythos 5.1+) are touched;
+// on them Claude Code keeps the prompt cache across effort changes. The model
+// is never changed. A typed /effort runs as set for one turn; to pin a level,
+// turn routing off and use /effort.
 
 const LOG_KEY = 'log'
 const MODE_KEY = 'mode'
@@ -105,8 +106,8 @@ export const register: Register = on => {
     isOn = (await $.store.get(MODE_KEY)) !== 'off'
     await $.command.register({
       name: 'effort-router',
-      description: 'Per-prompt effort routing (overrides /effort while on): on | off | log | eval',
-      argumentHint: '[on|off|log|eval]',
+      description: 'Per-prompt effort routing (a typed /effort runs as set for one turn): on | off | log | log clear | eval',
+      argumentHint: '[on|off|log|log clear|eval]',
       immediate: true,
     })
     show($, isOn)
@@ -116,13 +117,17 @@ export const register: Register = on => {
   on('command.run', { command: 'effort-router' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     if (arg === 'log') return { text: await summarize($) }
+    if (arg === 'log clear') {
+      await $.store.delete(LOG_KEY)
+      return { text: 'log cleared.' }
+    }
     if (arg === 'eval') return { text: await evaluate($) }
     if (arg === 'on' || arg === 'off') {
       isOn = arg === 'on'
       await $.store.set(MODE_KEY, arg)
       show($, isOn)
     } else if (arg !== '') {
-      return { text: `unknown "${arg}" (on | off | log | eval)` }
+      return { text: `unknown "${arg}" (on | off | log | log clear | eval)` }
     }
     return {
       text: isOn
@@ -148,8 +153,13 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     if (!isOn || e.text === '') return next(e)
-    // Another model was in use: no judgment for a rubric tuned for Opus 5.5.
-    if (mainModel !== undefined && !isRouted(mainModel)) return next(e)
+    // Before the first request names the model, ask the session for it.
+    if (mainModel === undefined) mainModel = await sessionModel($)
+    // Another model is in use: no judgment, and no classifier call, for it.
+    if (mainModel !== undefined && !isRouted(mainModel)) {
+      $.ui.status(`not routed (${mainModel})`)
+      return next(e)
+    }
 
     const prev = await read($, prevTurn)
     const prevLevel = prev?.level ?? null
@@ -316,6 +326,17 @@ async function judge($: EngineInterface, input: string): Promise<string | undefi
   }
 }
 
+// The main loop's model id, or undefined when the session does not name it
+// as an id (an alias such as "opus" is left to the first request to settle).
+async function sessionModel($: EngineInterface): Promise<string | undefined> {
+  try {
+    const model = await $.session.model()
+    return /^claude-/.test(model) ? model : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // The effort /effort saved for the model, as the settings hold it, or null
 // when they do not name one (a change for this session only).
 async function savedEffort($: EngineInterface, model: string | undefined): Promise<string | null> {
@@ -382,7 +403,8 @@ async function summarize($: EngineInterface): Promise<string> {
 }
 
 // Runs every eval case through the live classifier and scores the raw
-// judgment (before the floor) against the expected level.
+// judgment (before decide() falls back to the previous level) against the
+// expected level.
 async function evaluate($: EngineInterface): Promise<string> {
   const lines: string[] = []
   let hits = 0

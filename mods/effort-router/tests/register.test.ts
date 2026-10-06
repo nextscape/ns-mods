@@ -286,6 +286,21 @@ describe('effort-router', () => {
     expect(sent).toEqual(['xhigh'])
   })
 
+  test('a first prompt on a model not routed asks nothing and says so', async ($, on) => {
+    const seen = world(on, [label('high')])
+    on('session.model', async () => ({ value: 'claude-haiku-4-5-20251001' }))
+    await turn($, LONG, { model: 'claude-haiku-4-5-20251001' })
+    expect(seen.inputs).toEqual([])
+    expect(seen.status).toEqual(['not routed (claude-haiku-4-5-20251001)'])
+  })
+
+  test('a first prompt on a routed model is judged when the session names it', async ($, on) => {
+    const { sent } = world(on, [label('high')])
+    on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+    await turn($, LONG)
+    expect(sent).toEqual(['high'])
+  })
+
   test('a failed or unmatched judgment inherits the previous level', async ($, on) => {
     const { sent } = world(on, [label('medium'), new Error('api down'), 'nonsense'])
     await turn($, LONG)
@@ -328,6 +343,14 @@ describe('effort-router', () => {
     world(on, [])
     const { text } = await run($, 'medium')
     expect(text).toContain('unknown "medium"')
+  })
+
+  test('log clear empties the log', async ($, on) => {
+    world(on, [label('medium')])
+    await turn($, LONG)
+    expect((await run($, 'log')).text).toContain('1 turns logged')
+    expect((await run($, 'log clear')).text).toBe('log cleared.')
+    expect((await run($, 'log')).text).toBe('no turns logged yet.')
   })
 
   test('log shows each turn as prev -> level with its steps', async ($, on) => {
