@@ -1,0 +1,25 @@
+﻿<#
+音声通知の入り口。/voice スラッシュコマンドと voice.cmd から呼ばれる。
+
+  voice.ps1            切替
+  voice.ps1 on         再開
+  voice.ps1 off        停止
+  voice.ps1 status     現在の状態
+#>
+param([string]$Action = "toggle")
+
+$map = @{
+  ""       = "toggle"
+  "toggle" = "toggle"
+  "on"     = "unmute"
+  "unmute" = "unmute"
+  "off"    = "mute"
+  "mute"   = "mute"
+  "status" = "status"
+}
+$key = $Action.ToLower().Trim()
+if (-not $map.ContainsKey($key)) {
+  Write-Output "使い方: voice.ps1 [on|off|status]  （省略時は切替）"
+  exit 1
+}
+& (Join-Path $PSScriptRoot "notify.ps1") -Event $map[$key]
