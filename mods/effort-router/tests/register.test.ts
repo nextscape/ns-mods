@@ -365,7 +365,7 @@ describe('effort-router', () => {
   test('eval scores every case and counts judgments that are too low', async ($, on) => {
     world(on, Array.from({ length: 50 }, () => label('medium')))
     const { text } = await run($, 'eval')
-    expect(text).toMatch(/^eval: \d+\/31 match, \d+ judged too low/)
+    expect(text).toMatch(/^eval: \d+\/32 match, \d+ judged too low/)
     expect(text).toContain('LOW ctx-still-broken')
   })
 })

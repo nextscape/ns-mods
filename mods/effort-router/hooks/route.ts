@@ -23,7 +23,7 @@ const RUBRIC = [
 const CHOICE_RULE =
   '[choice] The [request] picks the [selected] options the previous answer offered: judge the work those options name on the same scale (a commit or closing is low, implementing a settled approach is medium), however heavy the previous turn was.'
 const REPLY_RULE =
-  '[reply] The [request] is a short reply agreeing to what [prev_answer_tail] proposed or asked: judge that proposed work on the same scale (a commit or confirmation is low, investigating a cause is high).'
+  '[reply] The [request] is a short reply agreeing to what [prev_answer_tail] proposed or asked. Read it as a request for that proposed work, stated in full, and judge that work on the same scale; the agreement itself weighs nothing (agreeing to a commit is low, to drafting a spec or design is high, to investigating a cause is high).'
 
 // A turn still running after this many model requests since it was judged,
 // or after this many tool errors, goes up one level (once per judgment).
@@ -153,7 +153,16 @@ export function compose(
       `[prev_answer_tail] ${prev.answerTail}`,
     )
   }
-  lines.push(`[request chars=${request.length}] ${clip(compact(request))}`)
+  // A bare "OK" pulls the judgment to low whatever it agrees to, so a reply
+  // to a question is stated as the request for the proposed work it is. Not
+  // so a short prompt beside offered options it did not pick, nor a typed
+  // AskUserQuestion answer: those say what to do themselves.
+  const agrees = why === 'reply' && (prev?.options ?? []).length === 0 && !('questions' in route)
+  lines.push(
+    agrees
+      ? `[request] go ahead with what [prev_answer_tail] proposed (the reply was: ${clip(compact(request))})`
+      : `[request chars=${request.length}] ${clip(compact(request))}`,
+  )
   if (selected.length > 0) {
     lines.push(`[selected] ${selected.map(one => `${one.key}: ${one.text}`).join(' | ')}`)
   }

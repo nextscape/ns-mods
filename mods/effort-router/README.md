@@ -42,7 +42,7 @@ Claude Code（ターミナル）で次を実行します。
 | `/effort-router off` | 自動判定をやめる。組み込みの `/effort` の設定がそのまま効く |
 | `/effort-router log` | 段階ごとのターン数と平均所要時間、直近10件の判定を表示する |
 | `/effort-router log clear` | 判定ログを消す |
-| `/effort-router eval` | 評価セット31件を実際の Haiku で判定し、一致数と低すぎる判定の数を表示する（Haiku を31回呼ぶ） |
+| `/effort-router eval` | 評価セット32件を実際の Haiku で判定し、一致数と低すぎる判定の数を表示する（Haiku を32回呼ぶ） |
 
 on / off は次のセッションにも引き継がれます。
 
@@ -218,7 +218,7 @@ claude --plugin-dir mods/effort-router      # 手元の版を読み込んで試�
 
 1. `hooks/route.ts` の `RUBRIC` を編集する。実際に誤判定した入力は `hooks/eval-cases.ts` に足す。
 2. `claude plugin test` と `tsc` を通す。
-3. 新しいセッションで `/effort-router eval` を実行し（Haiku を31回呼ぶので、少額の費用がかかります）、一致数と `LOW`（低すぎる判定）の数を確かめる。Git Bash から `claude -p "/effort-router eval"` を実行するときは、`MSYS_NO_PATHCONV=1` を付けないと `/` 始まりの引数がパスに書き換えられる。
+3. 新しいセッションで `/effort-router eval` を実行し（Haiku を32回呼ぶので、少額の費用がかかります）、一致数と `LOW`（低すぎる判定）の数を確かめる。Git Bash から `claude -p "/effort-router eval"` を実行するときは、`MSYS_NO_PATHCONV=1` を付けないと `/` 始まりの引数がパスに書き換えられる。
 
 ## 変更履歴
 

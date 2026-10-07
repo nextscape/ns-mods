@@ -204,6 +204,21 @@ describe('route', () => {
     })
   })
 
+  test('a reply to a question is read as the proposed work; one beside options or typed to AskUserQuestion is not', () => {
+    const reply = { why: 'reply', selected: [] } as const
+    expect(compose('ＯＫ', signals([], true), ['xhigh'], reply).split('\n').pop()).toBe(
+      '[request] go ahead with what [prev_answer_tail] proposed (the reply was: ＯＫ)',
+    )
+    expect(compose('5', signals(), ['xhigh'], reply).split('\n').pop()).toBe('[request chars=1] 5')
+    const typed = fromAsked({
+      questions: [{ question: 'どう進めますか？', header: '進め方', options: [{ label: '実装する' }], multiSelect: false }],
+      answers: { 'どう進めますか？': '原因を先に調べて' },
+    })!
+    expect(compose(typed.request, signals([], true), ['xhigh'], typed).split('\n').pop()).toBe(
+      '[request chars=13] 進め方: 原因を先に調べて',
+    )
+  })
+
   test('the classifier reads the picked options', () => {
     const out = compose('3', signals(), ['xhigh'], { why: 'choice', selected: picked('3', optionsOf(ANSWER))! })
     expect(out).toContain('[choice] ')

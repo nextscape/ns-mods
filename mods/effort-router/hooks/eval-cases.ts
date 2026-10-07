@@ -99,6 +99,7 @@ export const CASES: EvalCase[] = [
 
   // A short reply agrees to what the previous answer proposed.
   { name: 'reply-yes-to-investigation', request: 'はい', prev: light('テストを流して', '…split.test.ts だけが落ちています。原因を調査して修正まで進めますか？'), recent: ['medium'], expect: 'high' },
+  { name: 'reply-ok-to-design', request: 'ＯＫ', prev: light('macOS と Linux にも対応させたい', '…かなり大きな作り直しになります。進めるなら、まず仕様の詰めから始め、設計文書にしてから実装に入りたいと思います。それでよいですか？'), recent: ['medium'], expect: 'high' },
   { name: 'reply-ok-to-commit', request: 'OK', prev: heavy('原因を調べて直して', '…修正してテストが通りました。この内容でコミットしますか？'), recent: ['xhigh'], expect: 'low' },
 
   // An AskUserQuestion answer mid-turn: the picked option's meaning decides.
