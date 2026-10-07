@@ -1,0 +1,260 @@
+import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine, MockClock } from 'claude-code/testing'
+import type { On } from 'claude-code'
+
+import { FIXTURES } from './fixtures'
+
+const NOW = Date.UTC(2026, 9, 7, 12)
+const MINUTE = 60_000
+const ROOT = 'D:/work/repo'
+const FETCH = '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 fetch --quiet --no-auto-maintenance origin'
+
+type Reply = { code?: number; out?: string; err?: string; deny?: string }
+type Replies = Record<string, Reply | Reply[]>
+
+const GIT_PATHS = ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'index.lock']
+
+// A repository on main, in sync with origin/main, nothing left behind. A key
+// matches the first git command line (without "git") that contains it; an
+// array answers in turn and repeats its last entry.
+const CLEAN: Replies = {
+  version: { out: 'git version 2.49.0.windows.1\n' },
+  'rev-parse --show-toplevel': { out: `${ROOT}\n` },
+  'config --get-regexp': { code: 1 },
+  'for-each-ref --format=': { out: `main\tb7bfd6b\torigin\trefs/heads/main\t${ROOT}\n` },
+  'status --porcelain=v2': { out: FIXTURES['status-insync'] },
+  'fetch --quiet': {},
+  'ls-remote --heads': { out: 'b7bfd6b\trefs/heads/main\n' },
+  'stash list': {},
+  'rev-parse --git-path': { out: GIT_PATHS.map(name => `.git/${name}`).join('\n') + '\n' },
+}
+
+function world(
+  on: On,
+  overrides: Replies = {},
+  options: { answer?: string; store?: Record<string, unknown>; files?: string[] } = {},
+) {
+  mock.store(on, options.store)
+  const clock = mock.clock(on, { now: NOW })
+  const replies: Replies = { ...CLEAN, ...overrides }
+  const seen = {
+    git: [] as string[],
+    env: [] as Array<Readonly<Record<string, string>> | undefined>,
+    status: [] as Array<string | undefined>,
+    toasts: [] as string[],
+    context: [] as Array<readonly string[] | undefined>,
+    asked: [] as string[],
+  }
+  const files = new Set(options.files ?? [])
+  on('session.cwd', async () => ({ value: ROOT }))
+  on('process.run', async ($, e) => {
+    const line = e.argv.slice(1).join(' ')
+    seen.git.push(line)
+    seen.env.push(e.init?.env)
+    const key = Object.keys(replies).find(one => line.includes(one))
+    const entry = key === undefined ? { code: 1, err: `unstubbed: ${line}` } : replies[key]!
+    const reply = Array.isArray(entry) ? (entry.length > 1 ? entry.shift()! : entry[0]!) : entry
+    if (reply.deny !== undefined) return { deny: reply.deny }
+    return {
+      value: { exitCode: reply.code ?? 0, stdout: reply.out ?? '', stderr: reply.err ?? '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+  on('fs.exists', async ($, e) => ({ value: files.has(e.path.replace(/\\/g, '/')) }))
+  on('ui.status', async ($, e) => {
+    seen.status.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.toast', async ($, e) => {
+    seen.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.log', async () => ({ value: undefined }))
+  on('command.register', async ($, e) => ({ value: { command: e.name } }))
+  on('session.start', async ($, e) => ({ cwd: e.cwd }))
+  on('turn.start', async ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', async ($, e) => ({ text: e.answer }))
+  on('prompt.submit', async ($, e) => {
+    seen.context.push(e.context)
+    return { text: e.text, context: e.context }
+  })
+  on('tool.call', async ($, e) => {
+    const { questions } = e as unknown as { questions: Array<{ question: string }> }
+    seen.asked.push(questions[0]!.question)
+    if (options.answer === undefined) return { deny: 'dismissed' }
+    return { result: { answers: { [questions[0]!.question]: options.answer } } }
+  })
+  return { seen, clock }
+}
+
+// Lets timer callbacks (and the git calls they make) finish.
+async function settle(clock: MockClock) {
+  for (let i = 0; i < 5; i++) await clock.settle()
+}
+
+async function begin($: Engine, clock: MockClock, isInteractive = true) {
+  await $.session.start({ surface: 'terminal', isInteractive, cwd: ROOT })
+  await settle(clock)
+}
+
+async function pass(clock: MockClock, ms: number) {
+  await clock.advance(ms)
+  await settle(clock)
+}
+
+const run = ($: Engine, args = '') =>
+  $.command.run({
+    command: 'git-nudge',
+    args,
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+
+let turns = 0
+async function turn($: Engine, clock: MockClock) {
+  const turnId = `t${++turns}`
+  await $.turn.start({ text: 'x', turnId })
+  await $.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+  await settle(clock)
+}
+
+const fetches = (git: string[]) => git.filter(line => line === FETCH).length
+
+describe('looking at the repository', () => {
+  test('the first look fetches once the session is up, and says nothing when all is in sync', async ($, on) => {
+    const { seen, clock } = world(on)
+    await begin($, clock)
+    expect(fetches(seen.git)).toBe(1)
+    expect(seen.status.at(-1)).toBeUndefined()
+  })
+
+  test('fetch never prunes, skips maintenance and asks for no login; status takes no lock', async ($, on) => {
+    const { seen, clock } = world(on)
+    await begin($, clock)
+    const index = seen.git.indexOf(FETCH)
+    expect(seen.env[index]).toEqual({ GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' })
+    expect(seen.git.some(line => line.includes('--prune'))).toBe(false)
+    expect(seen.git.filter(line => line.includes('status')).every(line => line.startsWith('--no-optional-locks status'))).toBe(true)
+    expect(seen.env[seen.git.indexOf('version')]).toBeUndefined()
+  })
+
+  test('behind after the fetch shows in the status line', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': [{ out: FIXTURES['status-insync'] }, { out: FIXTURES['status-behind'] }],
+    })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBe('main ↓2 · fetch たった今')
+  })
+
+  test('the timer fetches every fetchInterval minutes', async ($, on) => {
+    const { seen, clock } = world(on)
+    await begin($, clock)
+    await pass(clock, 5 * MINUTE)
+    expect(fetches(seen.git)).toBe(2)
+  })
+
+  test('fetchOnStart false and fetchInterval 0 fetch nothing', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'config --get-regexp': { out: 'git-nudge.fetchonstart false\ngit-nudge.fetchinterval 0\n' },
+    })
+    await begin($, clock)
+    await pass(clock, 30 * MINUTE)
+    expect(fetches(seen.git)).toBe(0)
+  })
+
+  test('a fetch another session made a minute ago is not repeated', async ($, on) => {
+    const { seen, clock } = world(on, {}, { store: { [`fetch:${ROOT}`]: NOW - MINUTE } })
+    await begin($, clock)
+    expect(fetches(seen.git)).toBe(0)
+  })
+
+  test('an auth failure stops the timer fetch', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'fetch --quiet': { code: 128, err: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n" },
+    })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBe('main · fetch 失敗')
+    await pass(clock, 15 * MINUTE)
+    expect(fetches(seen.git)).toBe(1)
+  })
+
+  test('a network failure tries again at the next interval', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'fetch --quiet': { code: 128, err: "fatal: unable to access 'https://github.com/x/': Could not resolve host: github.com\n" },
+    })
+    await begin($, clock)
+    await pass(clock, 5 * MINUTE)
+    expect(fetches(seen.git)).toBe(2)
+  })
+
+  test('a fetch that times out is a failure, not a crash', async ($, on) => {
+    const { seen, clock } = world(on, { 'fetch --quiet': { deny: 'timed out' } })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBe('main · fetch 失敗')
+  })
+
+  test('outside a repository nothing shows, and /git-nudge says why', async ($, on) => {
+    const { seen, clock } = world(on, { 'rev-parse --show-toplevel': { code: 128, err: 'fatal: not a git repository' } })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBeUndefined()
+    expect((await run($)).text).toBe('何もしていません: git リポジトリの中ではありません')
+  })
+
+  test('git older than 2.29 does nothing', async ($, on) => {
+    const { seen, clock } = world(on, { version: { out: 'git version 2.28.0\n' } })
+    await begin($, clock)
+    expect(fetches(seen.git)).toBe(0)
+    expect((await run($)).text).toBe('何もしていません: git 2.29 以降が必要です（今は 2.28）')
+  })
+
+  test('enabled false does nothing', async ($, on) => {
+    const { seen, clock } = world(on, { 'config --get-regexp': { out: 'git-nudge.enabled false\n' } })
+    await begin($, clock)
+    expect(fetches(seen.git)).toBe(0)
+    expect((await run($)).text).toBe('何もしていません: git-nudge.enabled が false です')
+  })
+
+  test('a half-done merge is found by an absolute git path (a linked worktree)', async ($, on) => {
+    const paths = GIT_PATHS.map(name => (name === 'MERGE_HEAD' ? 'C:/main/.git/worktrees/wt/MERGE_HEAD' : `.git/${name}`))
+    const { seen, clock } = world(
+      on,
+      { 'rev-parse --git-path': { out: paths.join('\r\n') + '\r\n' } },
+      { files: ['C:/main/.git/worktrees/wt/MERGE_HEAD'] },
+    )
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBe('main · merge 中 · fetch たった今')
+  })
+
+  test('index.lock is reported once it has stayed ten minutes', async ($, on) => {
+    const { seen, clock } = world(on, {}, { files: [`${ROOT}/.git/index.lock`] })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBeUndefined()
+    // One timer interval at a time, so each refresh finishes before the next.
+    await pass(clock, 5 * MINUTE)
+    expect(seen.status.at(-1)).toBeUndefined()
+    await pass(clock, 5 * MINUTE)
+    expect(seen.status.at(-1)).toBe('main · lock · fetch たった今')
+  })
+
+  test('the end of a turn looks again without fetching', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': [
+        { out: FIXTURES['status-insync'] },
+        { out: FIXTURES['status-insync'] },
+        { out: FIXTURES['status-dirty'] },
+      ],
+    })
+    await begin($, clock)
+    await turn($, clock)
+    expect(seen.status.at(-1)).toBe('main · 未コミット 3 · fetch たった今')
+    expect(fetches(seen.git)).toBe(1)
+  })
+
+  test('an upstream ls-remote no longer lists shows as gone', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'for-each-ref --format=': { out: `feat-x\tabc\torigin\trefs/heads/feat-x\t${ROOT}\n` },
+      'status --porcelain=v2': { out: '# branch.oid abc\n# branch.head feat-x\n# branch.upstream origin/feat-x\n# branch.ab +0 -0\n' },
+    })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBe('feat-x upstream 消滅 · fetch たった今')
+  })
+})
