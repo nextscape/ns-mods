@@ -1,0 +1,11 @@
+{
+  "name": "git-nudge",
+  "version": "0.1.0",
+  "description": "Notices when the session's git repository falls behind its upstream, leaves work behind (uncommitted changes, stashes, a half-done rebase, a stale index.lock) or keeps branches whose upstream is gone; offers a safe fast-forward and a cleanup of merged branches. Calls no model.",
+  "author": {
+    "name": "Nextscape Inc."
+  },
+  "license": "MIT",
+  "repository": "https://github.com/nextscape/ns-mods",
+  "types": "./types/index.d.ts"
+}
