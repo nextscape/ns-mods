@@ -1,5 +1,4 @@
-# マーケットプレイスと各 mod の検査・テスト。
-# voice-notify の PowerShell テストが Windows PowerShell 5.1 を使うので、Windows で動かす。
+# マーケットプレイスと各 mod の検査・テスト。voice-notify が Windows・macOS・Linux に対応するので、3 つの OS で回す。
 # claude plugin validate / test はログインなしで動く。
 name: CI
 
@@ -13,7 +12,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,13 +47,6 @@ jobs:
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
 
-      - name: Test voice-notify scripts (tests/test-*.ps1, Windows PowerShell 5.1)
-        shell: pwsh
-        run: |
-          $failed = @()
-          foreach ($t in Get-ChildItem mods/voice-notify/tests -Filter test-*.ps1) {
-            Write-Host "== $($t.Name)"
-            powershell.exe -NoProfile -ExecutionPolicy Bypass -File $t.FullName
-            if ($LASTEXITCODE) { $failed += $t.Name }
-          }
-          if ($failed) { Write-Host "failed: $($failed -join ', ')"; exit 1 }
+      - name: Check the POSIX play script
+        if: runner.os != 'Windows'
+        run: sh -n mods/voice-notify/scripts/posix/play.sh

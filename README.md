@@ -16,10 +16,10 @@ mod は、Claude Code の中で動く関数フック（JavaScript / TypeScript�
 | mod | 概要 | 対応 | Haiku の呼び出し |
 |---|---|---|---|
 | [effort-router](mods/effort-router/) | プロンプトごとに effort（low / medium / high / xhigh）を自動で選ぶ。モデルは変えない | Opus / Sonnet 5.5 以降、Fable / Mythos 5.1 以降。OS は問わない | 判定のたびに1回 |
-| [voice-notify](mods/voice-notify/) | VOICEVOX による音声通知。長い応答は Haiku で要約して読み上げる | Windows 10 / 11 と VOICEVOX | 30秒を超えたターンの終わりなどに1回 |
+| [voice-notify](mods/voice-notify/) | VOICEVOX による音声通知。長い応答は Haiku で要約して読み上げる | Windows 10 / 11（macOS・Linux は試験的）と VOICEVOX。CLI のみ | 30秒を超えたターンの終わりなどに1回 |
 | [git-nudge](mods/git-nudge/) | git の遅れ（pull 忘れ）・置き忘れ・upstream が消えたブランチを知らせ、安全な取り込みと片付けを手伝う | git 2.29 以降。OS は問わない | 呼ばない |
 
-effort-router と voice-notify は Claude Code 2.1.291、git-nudge は 2.1.292 で動作を確認しています。
+effort-router は Claude Code 2.1.291、voice-notify と git-nudge は 2.1.292 で動作を確認しています。
 
 ## 導入
 
@@ -48,7 +48,7 @@ claude plugin update <mod>
 claude plugin uninstall <mod>
 ```
 
-更新は、新しいセッションを開くと反映されます。mod によっては、削除の前に後片付けのコマンドがあります（voice-notify の `/voice-notify:setup remove` など）。
+更新は、新しいセッションを開くと反映されます。mod によっては、削除の前に後片付けのコマンドがあります（voice-notify の `/voice-notify remove` など）。
 
 ## 導入する前に
 
