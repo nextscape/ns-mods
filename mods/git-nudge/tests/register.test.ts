@@ -298,7 +298,13 @@ describe('the band and pulling', () => {
 
   test('p fast-forwards with merge --ff-only @{u} and says how to go back', async ($, on) => {
     const { seen, clock } = world(on, {
-      'status --porcelain=v2': [...BEHIND, { out: FIXTURES['status-behind'] }, { out: FIXTURES['status-insync'] }],
+      // The first look, then pull's own look before and after its fetch, then after the merge.
+      'status --porcelain=v2': [
+        ...BEHIND,
+        { out: FIXTURES['status-behind'] },
+        { out: FIXTURES['status-behind'] },
+        { out: FIXTURES['status-insync'] },
+      ],
       'rev-parse --short HEAD': [{ out: 'c7f8761\n' }, { out: 'b7bfd6b\n' }],
       'merge --ff-only': {},
     })
@@ -349,6 +355,29 @@ describe('the band and pulling', () => {
     })
     await begin($, clock)
     expect((await run($, 'pull')).text).toBe('取り込めませんでした: fatal: Not possible to fast-forward, aborting.')
+  })
+
+  test('/git-nudge pull fetches first, so commits pushed since the last look are taken in', async ($, on) => {
+    // Another session fetched a minute ago, so the first look skipped its fetch
+    // and saw main in sync; the remote has moved on since.
+    const { seen, clock } = world(
+      on,
+      {
+        'status --porcelain=v2': [
+          { out: FIXTURES['status-insync'] },
+          { out: FIXTURES['status-insync'] },
+          { out: FIXTURES['status-behind'] },
+          { out: FIXTURES['status-insync'] },
+        ],
+        'rev-parse --short HEAD': [{ out: 'c7f8761\n' }, { out: 'b7bfd6b\n' }],
+        'merge --ff-only': {},
+      },
+      { store: { [`fetch:${ROOT}`]: NOW - MINUTE } },
+    )
+    await begin($, clock)
+    expect(fetches(seen.git)).toBe(0)
+    expect((await run($, 'pull')).text).toBe('取り込みました c7f8761 → b7bfd6b（戻すには git reset --keep c7f8761）')
+    expect(fetches(seen.git)).toBe(1)
   })
 
   test('pull outside a repository, before any look, answers instead of failing', async ($, on) => {

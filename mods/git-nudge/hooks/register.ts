@@ -422,7 +422,8 @@ async function tell($: EngineInterface, ctx: Ctx): Promise<string | null> {
 async function pull($: EngineInterface, ctx: Ctx): Promise<string> {
   if (ctx.off) return 'git-nudge は止まっています（/git-nudge on で再開）'
   if (await read($, busyState)) return 'Claude の作業中は取り込めません。作業が終わってから実行してください'
-  await refresh($, ctx, false)
+  // Fetch first, as git pull does: the last look may have skipped its fetch.
+  await refresh($, ctx, 'force')
   const snap = await read($, snapshotState)
   if (snap === null) return ctx.reason ?? '状態を取得できませんでした'
   const blocker = pullBlocker(snap)
