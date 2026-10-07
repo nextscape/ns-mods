@@ -1,142 +1,136 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  AGENT_STALE_MS,
-  DEFAULT_PROMPT,
-  buildPrompt,
-  cleanSummary,
-  decide,
-  isRunningAgent,
+  agentReportFallback,
+  agentText,
+  choosePhrase,
+  enginePort,
+  noticeKind,
   parseConfig,
-  summaryFileName,
+  permissionText,
+  pickFor,
+  planStop,
+  planSummary,
+  voiceFor,
   voiceHome,
 } from '../hooks/decide'
-import type { DecideInput, SpeechConfig } from '../hooks/decide'
+import type { VoiceConfig } from '../hooks/decide'
 
-const SPEECH: SpeechConfig = {
-  summarize: true,
-  summarizeEvents: ['stop', 'agentstop'],
-  summaryMinChars: 80,
-  summaryMaxChars: 60,
-  interimMaxChars: 30,
-  interimPrompt: ['途中経過なので{maxChars}文字以内の1文で。'],
-  summaryPrompt: ['報告を{maxChars}文字以内で。'],
-  briefMaxSeconds: 30,
+const CFG: VoiceConfig = {
+  speaker: 'metan',
+  speakerInterim: 'zundamon',
+  speakers: { metan: { id: 2, label: 'めたん' }, zundamon: { id: 3, label: 'ずんだもん' } },
+  speech: {
+    summarize: true,
+    summarizeEvents: ['stop', 'agentstop'],
+    summaryMinChars: 80,
+    summaryMaxChars: 60,
+    interimMaxChars: 30,
+    interimPrompt: ['途中なので{maxChars}文字で。'],
+    summaryPrompt: ['{maxChars}文字以内で。'],
+    briefMaxSeconds: 30,
+  },
+  notification: { toolLabels: { Bash: 'コマンド実行' } },
 }
-const LONG = 'あ'.repeat(80)
-const input = (over: Partial<DecideInput> = {}): DecideInput => ({
-  speech: SPEECH,
-  muted: false,
-  agentId: undefined,
-  answer: LONG,
-  durationMs: 60_000,
-  isAborted: false,
-  reason: 'answer',
-  runningAgents: 0,
-  ...over,
-})
+const DONE = '修正しました。テストも通っています。'
+const ASK = 'この方針で進めてよろしいですか。'
 
 describe('decide', () => {
-  test('a long main turn is summarized as final', () => {
-    expect(decide(input())).toEqual({ skip: null, kind: 'final', maxChars: 60, system: '報告を60文字以内で。' })
+  test('voiceFor: interim uses speakerInterim, falling back to the final speaker', () => {
+    expect(voiceFor(CFG, 'final')).toEqual({ name: 'metan', id: 2 })
+    expect(voiceFor(CFG, 'interim')).toEqual({ name: 'zundamon', id: 3 })
+    expect(voiceFor({ ...CFG, speakerInterim: 'nobody' }, 'interim')).toEqual({ name: 'metan', id: 2 })
   })
-  test('summarize false or missing disables it', () => {
-    expect(decide(input({ speech: { ...SPEECH, summarize: false } }))).toEqual({ skip: 'disabled' })
-    expect(decide(input({ speech: { ...SPEECH, summarize: undefined } }))).toEqual({ skip: 'disabled' })
-  })
-  test('an event outside summarizeEvents is skipped', () => {
-    expect(decide(input({ agentId: 'a1', speech: { ...SPEECH, summarizeEvents: ['stop'] } }))).toEqual({ skip: 'event' })
-  })
-  test('muted is skipped', () => {
-    expect(decide(input({ muted: true }))).toEqual({ skip: 'muted' })
-  })
-  test('an aborted or non-answer turn is skipped', () => {
-    expect(decide(input({ isAborted: true, reason: 'aborted' }))).toEqual({ skip: 'aborted' })
-    expect(decide(input({ reason: 'error' }))).toEqual({ skip: 'aborted' })
-  })
-  test('a main turn up to briefMaxSeconds is brief; a subagent never is', () => {
-    expect(decide(input({ durationMs: 30_000 }))).toEqual({ skip: 'brief' })
-    expect(decide(input({ durationMs: 30_001 })).skip).toBe(null)
-    expect(decide(input({ agentId: 'a1', durationMs: 1_000 })).skip).toBe(null)
-  })
-  test('a subagent is interim with the interim limit as both cap and floor', () => {
-    const d = decide(input({ agentId: 'a1', answer: 'い'.repeat(30) }))
-    expect(d).toEqual({ skip: null, kind: 'interim', maxChars: 30, system: '報告を30文字以内で。\n途中経過なので30文字以内の1文で。' })
-    expect(decide(input({ agentId: 'a1', answer: 'い'.repeat(29) }))).toEqual({ skip: 'short' })
-  })
-  test('a main turn with running subagents is interim', () => {
-    const d = decide(input({ runningAgents: 1 }))
-    expect(d.skip === null && d.kind).toBe('interim')
-  })
-  test('a final answer shorter than summaryMinChars is skipped', () => {
-    expect(decide(input({ answer: 'あ'.repeat(79) }))).toEqual({ skip: 'short' })
-  })
-})
 
-describe('buildPrompt', () => {
-  test('falls back to the default prompt and replaces every {maxChars}', () => {
-    expect(buildPrompt({}, 'final', 60)).toBe(DEFAULT_PROMPT)
-    expect(buildPrompt({ summaryPrompt: ['{maxChars}と{maxChars}'] }, 'final', 5)).toBe('5と5')
+  test('enginePort and pickFor read the config with defaults', () => {
+    expect(enginePort({})).toBe(50021)
+    expect(enginePort({ enginePort: 50121 })).toBe(50121)
+    expect(pickFor({}, DONE)).toBe(DONE)
+    expect(pickFor({ speech: { shortSentenceChars: 3 } }, DONE)).toBe('修正しました。')
   })
-  test('adds interimPrompt only for interim', () => {
-    expect(buildPrompt(SPEECH, 'final', 60)).toBe('報告を60文字以内で。')
-  })
-})
 
-describe('cleanSummary', () => {
-  test('keeps the first non-empty line and drops a label prefix', () => {
-    expect(cleanSummary('\n要約： 切り替えが完了しました。\n要約文：別の行', 60)).toEqual({ text: '切り替えが完了しました。' })
+  test('planStop: a long turn reads its body after the case phrase', () => {
+    expect(planStop({ cfg: CFG, answer: DONE, durationMs: 60_000, running: 0, engineAlive: true })).toEqual({
+      role: 'final', case: 'done', pcase: 'done', brief: false, phrases: ['stop/done', 'stop'], read: true,
+    })
   })
-  test('drops a label that sits on its own line', () => {
-    expect(cleanSummary('要約：\n本文です。', 60)).toEqual({ text: '本文です。' })
-  })
-  test('collapses whitespace', () => {
-    expect(cleanSummary('  A   B  ', 60)).toEqual({ text: 'A B' })
-  })
-  test('empty is an error', () => {
-    expect(cleanSummary(' \n ', 60)).toEqual({ error: 'empty-reply' })
-  })
-  test('longer than three times the cap is an error', () => {
-    expect(cleanSummary('あ'.repeat(31), 10)).toEqual({ error: 'too-long (31)' })
-    expect(cleanSummary('あ'.repeat(30), 10)).toEqual({ text: 'あ'.repeat(30) })
-  })
-})
 
-describe('summaryFileName', () => {
-  test('main and subagent files are distinct and path-safe', () => {
-    expect(summaryFileName('s-1')).toBe('s-1.json')
-    expect(summaryFileName('s-1', 'a1')).toBe('s-1__a1.json')
-    expect(summaryFileName('s/1:x', 'a.b')).toBe('s_1_x__a_b.json')
+  test('planStop: a short turn only plays the brief phrase, keeping ask and trouble apart', () => {
+    expect(planStop({ cfg: CFG, answer: ASK, durationMs: 10_000, running: 0, engineAlive: true })).toEqual({
+      role: 'final', case: 'ask', pcase: 'ask', brief: true, phrases: ['stop/brief/ask', 'stop/ask', 'stop'], read: false,
+    })
   })
-})
 
-describe('voiceHome', () => {
-  test('VOICE_NOTIFY_HOME wins and is normalized', () => {
-    expect(voiceHome('C:\\vn\\ ', 'C:\\Users\\u', undefined)).toBe('C:/vn')
+  test('planStop: with subagents still running, done becomes interim in the interim voice', () => {
+    expect(planStop({ cfg: CFG, answer: DONE, durationMs: 60_000, running: 2, engineAlive: true })).toEqual({
+      role: 'interim', case: 'done', pcase: 'interim', brief: false, phrases: ['stop/interim', 'stop/done', 'stop'], read: true,
+    })
+    // ask は途中でも対応が要るので interim に変えない
+    expect(planStop({ cfg: CFG, answer: ASK, durationMs: 60_000, running: 1, engineAlive: true }).pcase).toBe('ask')
   })
-  test('otherwise ~/.claude/voice-notify from USERPROFILE, then HOME', () => {
-    expect(voiceHome(undefined, 'C:\\Users\\u', '/h')).toBe('C:/Users/u/.claude/voice-notify')
-    expect(voiceHome('  ', undefined, '/h/')).toBe('/h/.claude/voice-notify')
-  })
-  test('no home at all is null', () => {
-    expect(voiceHome(undefined, undefined, undefined)).toBe(null)
-  })
-})
 
-describe('parseConfig', () => {
-  test('accepts a BOM and rejects broken JSON', () => {
-    expect(parseConfig('\uFEFF{"speech":{"summarize":true}}')).toEqual({ speech: { summarize: true } })
-    expect(() => parseConfig('{')).toThrow()
+  test('planStop: no readable body or no engine is solo, which never reads', () => {
+    expect(planStop({ cfg: CFG, answer: '', durationMs: 60_000, running: 0, engineAlive: true })).toEqual({
+      role: 'final', case: 'solo', pcase: 'solo', brief: false, phrases: ['stop/solo', 'stop'], read: false,
+    })
+    expect(planStop({ cfg: CFG, answer: DONE, durationMs: 60_000, running: 0, engineAlive: false }).case).toBe('solo')
+    // solo で中間報告なら、本文が続かないので短いほうの interim
+    expect(planStop({ cfg: CFG, answer: '', durationMs: 60_000, running: 1, engineAlive: true }).phrases).toEqual([
+      'stop/brief/interim', 'stop/interim', 'stop/solo', 'stop',
+    ])
   })
-})
 
-describe('isRunningAgent', () => {
-  const now = 10 * AGENT_STALE_MS
-  test('matches the session id ignoring BOM and CRLF', () => {
-    expect(isRunningAgent('\uFEFFsess-1\r\n', now, now, 'sess-1')).toBe(true)
-    expect(isRunningAgent('sess-2\r\n', now, now, 'sess-1')).toBe(false)
+  test('planSummary: disabled, other events and short answers are skipped; interim is capped', () => {
+    const long = 'あ'.repeat(100)
+    expect(planSummary({ ...CFG.speech, summarize: false }, 'stop', 'final', long)).toEqual({ skip: 'disabled' })
+    expect(planSummary({ ...CFG.speech, summarizeEvents: ['stop'] }, 'agentstop', 'interim', long)).toEqual({ skip: 'event' })
+    expect(planSummary(CFG.speech!, 'stop', 'final', 'あ'.repeat(79))).toEqual({ skip: 'short' })
+    expect(planSummary(CFG.speech!, 'stop', 'final', long)).toEqual({ skip: null, maxChars: 60, system: '60文字以内で。' })
+    expect(planSummary(CFG.speech!, 'agentstop', 'interim', 'あ'.repeat(29))).toEqual({ skip: 'short' })
+    expect(planSummary(CFG.speech!, 'agentstop', 'interim', 'あ'.repeat(30))).toEqual({
+      skip: null, maxChars: 30, system: '30文字以内で。\n途中なので30文字で。',
+    })
   })
-  test('ignores a record older than an hour', () => {
-    expect(isRunningAgent('sess-1', now - AGENT_STALE_MS - 1, now, 'sess-1')).toBe(false)
+
+  test('agentText: description and report, without repeating a report that already says done', () => {
+    expect(agentText('調査', '原因はパスでした。')).toBe('調査が完了しました。原因はパスでした。')
+    expect(agentText('調査', '調査が完了しました。原因はパスでした。')).toBe('調査。調査が完了しました。原因はパスでした。')
+    expect(agentText('調査', null)).toBe('調査が完了しました。')
+    expect(agentText(null, '原因はパスでした。')).toBe('原因はパスでした。')
+    expect(agentText(null, null)).toBeNull()
+  })
+
+  test('agentReportFallback: a picked sentence longer than the cap is dropped', () => {
+    expect(agentReportFallback('短い報告です。', CFG.speech!)).toBe('短い報告です。')
+    // 上限は max(interimMaxChars, interimMaxChars) + 1 = 31
+    expect(agentReportFallback('あ'.repeat(31), CFG.speech!)).toBe('あ'.repeat(31))
+    expect(agentReportFallback('あ'.repeat(32), CFG.speech!)).toBeNull()
+    expect(agentReportFallback(null, CFG.speech!)).toBeNull()
+  })
+
+  test('permissionText and noticeKind', () => {
+    expect(permissionText(CFG, 'Bash')).toBe('コマンド実行の許可待ちです。')
+    expect(permissionText(CFG, 'mcp__x__y')).toBe('mcp__x__yの許可待ちです。')
+    expect(noticeKind('idle_prompt')).toBe('idle')
+    expect(noticeKind('elicitation_dialog')).toBe('permission')
+    expect(noticeKind('agent_needs_input')).toBe('permission')
+    expect(noticeKind('quota_auto_resume_fired')).toBe('notification')
+    expect(noticeKind('permission_prompt')).toBeNull()
+    expect(noticeKind('something_new')).toBeNull()
+  })
+
+  test('choosePhrase avoids the previous pick unless it is the only one', () => {
+    expect(choosePhrase(['01.wav', '02.wav'], '01.wav', 0)).toBe('02.wav')
+    expect(choosePhrase(['01.wav'], '01.wav', 0.9)).toBe('01.wav')
+    expect(choosePhrase(['01.wav', '02.wav', '03.wav'], null, 0.99)).toBe('03.wav')
+    expect(choosePhrase([], null, 0)).toBeNull()
+  })
+
+  test('voiceHome and parseConfig are unchanged from 0.2.0', () => {
+    expect(voiceHome('D:\\v\\', undefined, undefined)).toBe('D:/v')
+    expect(voiceHome(undefined, 'C:\\Users\\u', undefined)).toBe('C:/Users/u/.claude/voice-notify')
+    expect(voiceHome(undefined, undefined, '/home/u')).toBe('/home/u/.claude/voice-notify')
+    expect(voiceHome(undefined, undefined, undefined)).toBeNull()
+    expect(parseConfig('\uFEFF{"speaker":"metan"}')).toEqual({ speaker: 'metan' })
   })
 })
