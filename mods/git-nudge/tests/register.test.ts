@@ -36,7 +36,11 @@ function world(
 ) {
   mock.store(on, options.store)
   const clock = mock.clock(on, { now: NOW })
-  const replies: Replies = { ...CLEAN, ...overrides }
+  // Arrays are answered by shift(): copy them, so a shared constant such as
+  // BEHIND answers every test from its start.
+  const replies: Replies = Object.fromEntries(
+    Object.entries({ ...CLEAN, ...overrides }).map(([key, reply]) => [key, Array.isArray(reply) ? [...reply] : reply]),
+  )
   const seen = {
     git: [] as string[],
     env: [] as Array<Readonly<Record<string, string>> | undefined>,
@@ -69,6 +73,8 @@ function world(
     return { value: undefined }
   })
   on('ui.log', async () => ({ value: undefined }))
+  // What other mods draw in the band beneath this one: nothing.
+  on('ui.render', async () => ({ type: 'Box' as const }))
   on('command.register', async ($, e) => ({ value: { command: e.name } }))
   on('session.start', async ($, e) => ({ cwd: e.cwd }))
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
@@ -256,5 +262,148 @@ describe('looking at the repository', () => {
     })
     await begin($, clock)
     expect(seen.status.at(-1)).toBe('feat-x upstream 消滅 · fetch たった今')
+  })
+})
+
+const BAND = {
+  plugin: 'git-nudge',
+  component: 'AbovePrompt',
+  requestId: 'band',
+  viewport: { columns: 120, rows: 40 },
+  props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 120, scroll: { offset: 0, bodyRows: 4 }, view: {} },
+} as const
+
+const band = ($: Engine, isWorking = false) =>
+  $.ui.mount({ ...BAND, props: { ...BAND.props, isWorking }, surface: 'terminal' })
+
+const BEHIND = [{ out: FIXTURES['status-insync'] }, { out: FIXTURES['status-behind'] }]
+
+describe('the band and pulling', () => {
+  test('behind and clean: the band offers p to pull, and no button has a digit hotkey', async ($, on) => {
+    const { clock } = world(on, { 'status --porcelain=v2': BEHIND })
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: 'origin/main より 2 遅れ' })).toBeDefined()
+    expect(await ui.find({ key: 'pull' })).toMatchObject({ type: 'Button', props: { hotkey: 'p' } })
+    expect(await ui.find({ key: 'close' })).toMatchObject({ type: 'Button', props: { hotkey: 'x' } })
+    for (const button of await ui.findAll({ type: 'Button' })) {
+      expect((button as { props: { hotkey?: string } }).props.hotkey ?? '').not.toMatch(/^\d$/)
+    }
+    await ui.unmount()
+  })
+
+  test('p fast-forwards with merge --ff-only @{u} and says how to go back', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': [...BEHIND, { out: FIXTURES['status-behind'] }, { out: FIXTURES['status-insync'] }],
+      'rev-parse --short HEAD': [{ out: 'c7f8761\n' }, { out: 'b7bfd6b\n' }],
+      'merge --ff-only': {},
+    })
+    await begin($, clock)
+    const ui = await band($)
+    await ui.press({ key: 'pull' })
+    await settle(clock)
+    expect(seen.toasts).toEqual(['取り込みました c7f8761 → b7bfd6b（戻すには git reset --keep c7f8761）'])
+    expect(seen.git).toContain('merge --ff-only @{u}')
+    expect(seen.git.some(line => line.startsWith('pull'))).toBe(false)
+    await ui.unmount()
+  })
+
+  test('with tracked changes the band says to pull by hand and offers no button', async ($, on) => {
+    const dirty = `${FIXTURES['status-behind']}1 .M N... 100644 100644 100644 aaa aaa f.txt\n`
+    const { clock } = world(on, { 'status --porcelain=v2': [{ out: FIXTURES['status-insync'] }, { out: dirty }] })
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: 'origin/main より 2 遅れ。未コミットの変更があるので、取り込みは手動で' })).toBeDefined()
+    expect(await ui.find({ key: 'pull' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('no pull button while Claude works, and /git-nudge pull waits for the turn to end', async ($, on) => {
+    const { clock } = world(on, { 'status --porcelain=v2': BEHIND })
+    await begin($, clock)
+    const working = await band($, true)
+    expect(await working.find({ key: 'pull' })).toBeUndefined()
+    await working.unmount()
+    await $.turn.start({ text: 'x', turnId: 'busy-1' })
+    expect((await run($, 'pull')).text).toBe('Claude の作業中は取り込めません。作業が終わってから実行してください')
+  })
+
+  test('/git-nudge pull says why it will not pull', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': [{ out: FIXTURES['status-insync'] }, { out: FIXTURES['status-diverged'] }],
+    })
+    await begin($, clock)
+    expect((await run($, 'pull')).text).toBe('取り込みませんでした: origin/main と分岐しています（↓2 ↑1）')
+    expect(seen.git.some(line => line.startsWith('merge'))).toBe(false)
+  })
+
+  test('git refusing the fast-forward is passed on', async ($, on) => {
+    const { clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'rev-parse --short HEAD': { out: 'c7f8761\n' },
+      'merge --ff-only': { code: 128, err: 'fatal: Not possible to fast-forward, aborting.\n' },
+    })
+    await begin($, clock)
+    expect((await run($, 'pull')).text).toBe('取り込めませんでした: fatal: Not possible to fast-forward, aborting.')
+  })
+
+  test('pull outside a repository, before any look, answers instead of failing', async ($, on) => {
+    world(on, { 'rev-parse --show-toplevel': { code: 128, err: 'fatal: not a git repository' } })
+    expect((await run($, 'pull')).text).toBe('git リポジトリの中ではありません')
+  })
+
+  test('x hides the notices shown until they change', async ($, on) => {
+    const behind3 = FIXTURES['status-behind'].replace('-2', '-3')
+    const { clock } = world(on, {
+      'status --porcelain=v2': [...BEHIND, { out: FIXTURES['status-behind'] }, { out: behind3 }],
+    })
+    await begin($, clock)
+    const ui = await band($)
+    await ui.press({ key: 'close' })
+    await ui.redraw()
+    expect(await ui.find({ type: 'Text', text: 'origin/main より 2 遅れ' })).toBeUndefined()
+    await run($)
+    await ui.redraw()
+    expect(await ui.find({ type: 'Text', text: 'origin/main より 3 遅れ' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('band false keeps the band empty', async ($, on) => {
+    const { clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'config --get-regexp': { out: 'git-nudge.band false\n' },
+    })
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: 'origin/main より 2 遅れ' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('an auth failure shows in the band', async ($, on) => {
+    const { clock } = world(on, { 'fetch --quiet': { code: 128, err: 'git@github.com: Permission denied (publickey).\n' } })
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: 'fetch が認証で失敗しました。このセッションでは定期 fetch を止めます' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('five branches with a gone upstream suggest tidy once a day', async ($, on) => {
+    const gone = ['a', 'b', 'c', 'd', 'e'].map(name => `${name}\t111\torigin\trefs/heads/${name}\t`).join('\n')
+    const replies = { 'for-each-ref --format=': { out: `main\tb7bfd6b\torigin\trefs/heads/main\t${ROOT}\n${gone}\n` } }
+    const { clock } = world(on, replies)
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: 'upstream が消えたブランチ 5 本 → /git-nudge tidy' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the tidy hint stays quiet when another session showed it today', async ($, on) => {
+    const gone = ['a', 'b', 'c', 'd', 'e'].map(name => `${name}\t111\torigin\trefs/heads/${name}\t`).join('\n')
+    const replies = { 'for-each-ref --format=': { out: `main\tb7bfd6b\torigin\trefs/heads/main\t${ROOT}\n${gone}\n` } }
+    const { clock } = world(on, replies, { store: { [`tidy-hint:${ROOT}`]: '2026-10-07' } })
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: 'upstream が消えたブランチ 5 本 → /git-nudge tidy' })).toBeUndefined()
+    await ui.unmount()
   })
 })
