@@ -16,6 +16,11 @@
       "name": "voice-notify",
       "source": "./mods/voice-notify",
       "description": "VOICEVOX による音声通知と Haiku 要約（Windows）"
+    },
+    {
+      "name": "git-nudge",
+      "source": "./mods/git-nudge",
+      "description": "git の遅れ（pull 忘れ）・置き忘れ・upstream が消えたブランチを知らせ、安全な取り込みと片付けを手伝う（モデルを呼ばない）"
     }
   ]
 }
