@@ -63,7 +63,7 @@ origin/main より 3 遅れ  p: 取り込む  x: 閉じる
 
 | コマンド | 動作 |
 |---|---|
-| `/git-nudge` | 状態を取り直して表示（fetch もする） |
+| `/git-nudge` | 状態を取り直して表示（fetch もする。最後に fetch が成功した時刻も出す） |
 | `/git-nudge pull` | fetch してから取り込み（帯の `p` と同じ） |
 | `/git-nudge tidy` | upstream が消えたブランチの片付け |
 | `/git-nudge off` / `on` | このセッションだけ止める／再開する |
@@ -101,7 +101,7 @@ git config git-nudge.enabled false                # このリポジトリでは�
 |---|---|
 | モデル | 呼びません |
 | ネットワーク | 利用者の remote への `git fetch` と `git ls-remote`（開始時と、既定で5分ごと。同じリポジトリを複数のセッションで開いていても重ねません） |
-| 認証 | ログインの入力や画面は出しません（`GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`）。認証に失敗したら、そのセッションでは定期 fetch を止めて知らせます |
+| 認証 | ログインの入力や画面は出しません（`GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`）。SSH は、自分で ssh コマンド（`GIT_SSH_COMMAND`、`GIT_SSH`、`core.sshCommand`）を設定していなければ `BatchMode=yes` で動かし、ホスト鍵の確認やパスフレーズを聞きません。認証に失敗したら、そのセッションでは定期 fetch を止めて知らせます |
 | 手元に残るもの | Claude Code の mod 用の保存領域（`~/.claude/plugins/store/`）に、リポジトリごとの最後の fetch の時刻と、片付けの案内を出した日 |
 
 ## 仕組み

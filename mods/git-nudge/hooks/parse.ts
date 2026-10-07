@@ -175,7 +175,7 @@ export function absolutePath(root: string, path: string): string {
 }
 
 const AUTH =
-  /authentication failed|could not read (?:username|password)|terminal prompts disabled|permission denied \(publickey|access denied|invalid username or password|\b40[13]\b/i
+  /authentication failed|could not read (?:username|password)|terminal prompts disabled|permission denied \(publickey|host key verification failed|access denied|invalid username or password|\b40[13]\b/i
 
 // Whether a fetch failed for want of a login, as opposed to the network.
 export function isAuthError(stderr: string): boolean {

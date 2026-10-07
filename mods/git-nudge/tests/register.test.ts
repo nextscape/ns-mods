@@ -8,9 +8,12 @@ import { FIXTURES } from './fixtures'
 const NOW = Date.UTC(2026, 9, 7, 12)
 const MINUTE = 60_000
 const ROOT = 'D:/work/repo'
-const FETCH = '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 fetch --quiet --no-auto-maintenance origin'
+const FETCH =
+  '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 -c core.sshCommand=ssh -o BatchMode=yes fetch --quiet --no-auto-maintenance origin'
 
-type Reply = { code?: number; out?: string; err?: string; deny?: string }
+// `before` runs when the command is called, before it answers (to start a turn
+// or another command while this one is still running).
+type Reply = { code?: number; out?: string; err?: string; deny?: string; before?: () => unknown }
 type Replies = Record<string, Reply | Reply[]>
 
 const GIT_PATHS = ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'index.lock']
@@ -28,14 +31,16 @@ const CLEAN: Replies = {
   'ls-remote --heads': { out: 'b7bfd6b\trefs/heads/main\n' },
   'stash list': {},
   'rev-parse --git-path': { out: GIT_PATHS.map(name => `.git/${name}`).join('\n') + '\n' },
+  'config --get core.sshCommand': { code: 1 },
 }
 
 function world(
   on: On,
   overrides: Replies = {},
-  options: { answer?: string; store?: Record<string, unknown>; files?: string[] } = {},
+  options: { answer?: string; store?: Record<string, unknown>; files?: string[]; env?: Record<string, string> } = {},
 ) {
   mock.store(on, options.store)
+  mock.env(on, options.env ?? {})
   const clock = mock.clock(on, { now: NOW })
   // Arrays are answered by shift(): copy them, so a shared constant such as
   // BEHIND answers every test from its start.
@@ -59,6 +64,7 @@ function world(
     const key = Object.keys(replies).find(one => line.includes(one))
     const entry = key === undefined ? { code: 1, err: `unstubbed: ${line}` } : replies[key]!
     const reply = Array.isArray(entry) ? (entry.length > 1 ? entry.shift()! : entry[0]!) : entry
+    if (reply.before !== undefined) await reply.before()
     if (reply.deny !== undefined) return { deny: reply.deny }
     return {
       value: { exitCode: reply.code ?? 0, stdout: reply.out ?? '', stderr: reply.err ?? '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -127,7 +133,7 @@ async function turn($: Engine, clock: MockClock) {
   await settle(clock)
 }
 
-const fetches = (git: string[]) => git.filter(line => line === FETCH).length
+const fetches = (git: string[]) => git.filter(line => line.includes(' fetch --quiet ')).length
 
 describe('looking at the repository', () => {
   test('the first look fetches once the session is up, and says nothing when all is in sync', async ($, on) => {
@@ -141,6 +147,7 @@ describe('looking at the repository', () => {
     const { seen, clock } = world(on)
     await begin($, clock)
     const index = seen.git.indexOf(FETCH)
+    expect(index).toBeGreaterThan(-1)
     expect(seen.env[index]).toEqual({ GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' })
     expect(seen.git.some(line => line.includes('--prune'))).toBe(false)
     expect(seen.git.filter(line => line.includes('status')).every(line => line.startsWith('--no-optional-locks status'))).toBe(true)
@@ -267,6 +274,27 @@ describe('looking at the repository', () => {
     await begin($, clock)
     expect(seen.status.at(-1)).toBe('feat-x upstream 消滅 · fetch たった今')
   })
+
+  test('ssh asks nothing either: fetch and ls-remote run ssh in batch mode', async ($, on) => {
+    const { seen, clock } = world(on)
+    await begin($, clock)
+    expect(seen.git).toContain(FETCH)
+    expect(seen.git).toContain('-c core.sshCommand=ssh -o BatchMode=yes ls-remote --heads origin')
+  })
+
+  test('an ssh command the person set (GIT_SSH or core.sshCommand) is left alone', async ($, on) => {
+    const viaEnv = world(on, {}, { env: { GIT_SSH: 'C:/Program Files/PuTTY/plink.exe' } })
+    await begin($, viaEnv.clock)
+    expect(viaEnv.seen.git.some(line => line.includes('core.sshCommand=ssh'))).toBe(false)
+    expect(fetches(viaEnv.seen.git)).toBe(1)
+  })
+
+  test('core.sshCommand in git config is left alone', async ($, on) => {
+    const { seen, clock } = world(on, { 'config --get core.sshCommand': { out: 'ssh -i ~/.ssh/work\n' } })
+    await begin($, clock)
+    expect(seen.git.some(line => line.includes('core.sshCommand=ssh'))).toBe(false)
+    expect(fetches(seen.git)).toBe(1)
+  })
 })
 
 const BAND = {
@@ -378,6 +406,67 @@ describe('the band and pulling', () => {
     expect(fetches(seen.git)).toBe(0)
     expect((await run($, 'pull')).text).toBe('取り込みました c7f8761 → b7bfd6b（戻すには git reset --keep c7f8761）')
     expect(fetches(seen.git)).toBe(1)
+  })
+
+  test('a turn that starts while pull is fetching stops the merge', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'fetch --quiet': [{}, { before: () => $.turn.start({ text: 'x', turnId: 'mid-pull' }) }],
+      'rev-parse --short HEAD': { out: 'c7f8761\n' },
+      'merge --ff-only': {},
+    })
+    await begin($, clock)
+    expect((await run($, 'pull')).text).toBe('Claude の作業中は取り込めません。作業が終わってから実行してください')
+    expect(seen.git.some(line => line.startsWith('merge'))).toBe(false)
+  })
+
+  test('a second pull while one runs does not merge again', async ($, on) => {
+    let second: Promise<{ text?: string }> | undefined
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'fetch --quiet': [
+        {},
+        {
+          before: () => {
+            second = run($, 'pull')
+          },
+        },
+        {},
+      ],
+      'rev-parse --short HEAD': [{ out: 'c7f8761\n' }, { out: 'b7bfd6b\n' }],
+      'merge --ff-only': {},
+    })
+    await begin($, clock)
+    await run($, 'pull')
+    expect((await second!).text).toBe('取り込みの途中です。終わるまでお待ちください')
+    expect(seen.git.filter(line => line.startsWith('merge')).length).toBe(1)
+  })
+
+  test('pull asked while the first look is still running waits for it, then fetches and pulls', async ($, on) => {
+    let pulled: Promise<{ text?: string }> | undefined
+    const { clock } = world(on, {
+      // The first look before and after its fetch, pull's look before and after
+      // its fetch, then the look after the merge.
+      'status --porcelain=v2': [
+        { out: FIXTURES['status-insync'] },
+        { out: FIXTURES['status-behind'] },
+        { out: FIXTURES['status-behind'] },
+        { out: FIXTURES['status-behind'] },
+        { out: FIXTURES['status-insync'] },
+      ],
+      'fetch --quiet': [
+        {
+          before: () => {
+            pulled = run($, 'pull')
+          },
+        },
+        {},
+      ],
+      'rev-parse --short HEAD': [{ out: 'c7f8761\n' }, { out: 'b7bfd6b\n' }],
+      'merge --ff-only': {},
+    })
+    await begin($, clock)
+    expect((await pulled!).text).toBe('取り込みました c7f8761 → b7bfd6b（戻すには git reset --keep c7f8761）')
   })
 
   test('pull outside a repository, before any look, answers instead of failing', async ($, on) => {
@@ -573,6 +662,18 @@ describe('tidy and the command', () => {
     expect(text).toContain('fetch: 開始時と5分ごと')
     expect(text).toContain('  git-nudge.band=maybe は true / false ではないので無視しました')
     expect(text).toContain('  git-nudge.fetchintervall は知らない設定です')
+  })
+
+  test('/git-nudge always says when the last fetch worked', async ($, on) => {
+    const { clock } = world(on)
+    await begin($, clock)
+    expect((await run($)).text).toContain('fetch: 開始時と5分ごと（最後の成功: たった今）')
+  })
+
+  test('/git-nudge says when no fetch has worked yet', async ($, on) => {
+    const { clock } = world(on, { 'fetch --quiet': { code: 128, err: 'fatal: unable to access: Could not resolve host\n' } })
+    await begin($, clock)
+    expect((await run($)).text).toContain('fetch: 開始時と5分ごと（まだ成功していません）')
   })
 
   test('an unknown argument is refused', async ($, on) => {

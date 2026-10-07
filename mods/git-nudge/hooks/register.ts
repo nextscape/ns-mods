@@ -7,6 +7,7 @@ import {
   MINUTE,
   RESOLVED,
   TIDY_HINT_MIN,
+  ago,
   noticeKey,
   notices,
   pullBlocker,
@@ -68,7 +69,10 @@ type Ctx = {
   reason: string | null
   settings: Settings
   problems: string[]
-  refreshing: boolean
+  // Refreshes run one after another on this chain, so none is dropped.
+  queue: Promise<void>
+  // Set while a pull runs, so a second press does not merge again.
+  pulling: boolean
   timer: Timer | null
   interval: number
   authStopped: boolean
@@ -94,7 +98,8 @@ export const register: Register = on => {
     reason: null,
     settings: { ...DEFAULTS },
     problems: [],
-    refreshing: false,
+    queue: Promise.resolve(),
+    pulling: false,
     timer: null,
     interval: 0,
     authStopped: false,
@@ -231,17 +236,28 @@ async function exists($: EngineInterface, path: string): Promise<boolean> {
 }
 
 // Looks at the repository again, fetching when `when` asks for it, and
-// redraws. Never throws; while one refresh runs, another is a no-op.
-async function refresh($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void> {
-  if (ctx.off || ctx.refreshing) return
-  ctx.refreshing = true
+// redraws. A refresh asked for while another runs waits for it and then runs,
+// so a pull's fetch or the look after a turn is never dropped. Never throws.
+function refresh($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void> {
+  ctx.queue = ctx.queue.then(() => lookSafely($, ctx, when))
+  return ctx.queue
+}
+
+async function lookSafely($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void> {
+  if (ctx.off) return
   try {
     await look($, ctx, when)
   } catch (error) {
     $.ui.log(`git-nudge: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
-  } finally {
-    ctx.refreshing = false
   }
+}
+
+// Batch mode keeps ssh from asking for a host key or a passphrase, unless the
+// person chose their own ssh command (GIT_SSH_COMMAND, GIT_SSH or core.sshCommand).
+async function sshArgs($: EngineInterface, root: string): Promise<string[]> {
+  if ((await $.env.get('GIT_SSH_COMMAND')) || (await $.env.get('GIT_SSH'))) return []
+  const configured = await git($, root, ['config', '--get', 'core.sshCommand'])
+  return configured.code === 0 ? [] : ['-c', 'core.sshCommand=ssh -o BatchMode=yes']
 }
 
 async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void> {
@@ -299,16 +315,17 @@ async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void
     (when === 'start' && settings.fetchOnStart) ||
     (when === 'timer' && settings.fetchInterval > 0)
   if (wants && remote !== null && !ctx.authStopped && (when === 'force' || (await fetchDue($, root, settings, now)))) {
+    const ssh = await sshArgs($, root)
     const fetched = await git(
       $,
       root,
-      ['-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=20', 'fetch', '--quiet', '--no-auto-maintenance', remote],
+      ['-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=20', ...ssh, 'fetch', '--quiet', '--no-auto-maintenance', remote],
       { remote: true },
     )
     if (fetched.code === 0) {
       ctx.failed = null
       await $.store.set(fetchKey(root), now)
-      const listed = await git($, root, ['ls-remote', '--heads', remote], { remote: true })
+      const listed = await git($, root, [...ssh, 'ls-remote', '--heads', remote], { remote: true })
       if (listed.code === 0) {
         const heads = parseRemoteHeads(listed.out)
         goneNames = withGoneUpstream(branches, heads, remote).map(branch => branch.name)
@@ -421,7 +438,19 @@ async function tell($: EngineInterface, ctx: Ctx): Promise<string | null> {
 // Fast-forwards to the upstream when that is safe now, and says what happened.
 async function pull($: EngineInterface, ctx: Ctx): Promise<string> {
   if (ctx.off) return 'git-nudge は止まっています（/git-nudge on で再開）'
-  if (await read($, busyState)) return 'Claude の作業中は取り込めません。作業が終わってから実行してください'
+  if (ctx.pulling) return '取り込みの途中です。終わるまでお待ちください'
+  ctx.pulling = true
+  try {
+    return await fastForward($, ctx)
+  } finally {
+    ctx.pulling = false
+  }
+}
+
+const BUSY = 'Claude の作業中は取り込めません。作業が終わってから実行してください'
+
+async function fastForward($: EngineInterface, ctx: Ctx): Promise<string> {
+  if (await read($, busyState)) return BUSY
   // Fetch first, as git pull does: the last look may have skipped its fetch.
   await refresh($, ctx, 'force')
   const snap = await read($, snapshotState)
@@ -429,6 +458,8 @@ async function pull($: EngineInterface, ctx: Ctx): Promise<string> {
   const blocker = pullBlocker(snap)
   if (blocker !== null) return `取り込みませんでした: ${blocker}`
   const before = (await git($, snap.root, ['rev-parse', '--short', 'HEAD'])).out.trim()
+  // The fetch can take a while: a turn may have started meanwhile.
+  if (await read($, busyState)) return BUSY
   const merged = await git($, snap.root, ['merge', '--ff-only', '@{u}'], { timeoutMs: REMOTE_TIMEOUT })
   const after = (await git($, snap.root, ['rev-parse', '--short', 'HEAD'])).out.trim()
   await refresh($, ctx, false)
@@ -452,7 +483,7 @@ async function tidy($: EngineInterface, ctx: Ctx): Promise<string> {
   const branches = parseBranches((await git($, root, ['for-each-ref', `--format=${BRANCH_FORMAT}`, 'refs/heads'])).out)
   const head = (await git($, root, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).out.trim()
   const remote = branches.find(branch => branch.name === head)?.remote ?? 'origin'
-  const listed = await git($, root, ['ls-remote', '--heads', remote], { remote: true })
+  const listed = await git($, root, [...(await sshArgs($, root)), 'ls-remote', '--heads', remote], { remote: true })
   if (listed.code !== 0) return `${remote} のブランチ一覧を取得できませんでした: ${firstLine(listed.err)}`
   const merged = new Set(lines((await git($, root, ['for-each-ref', '--merged', 'HEAD', '--format=%(refname:short)', 'refs/heads'])).out))
   const plan = planTidy(tidyCandidates(branches, parseRemoteHeads(listed.out), remote), merged)
@@ -499,7 +530,8 @@ async function report($: EngineInterface, ctx: Ctx): Promise<string> {
   const when = [ctx.settings.fetchOnStart ? '開始時' : '', ctx.settings.fetchInterval > 0 ? `${ctx.settings.fetchInterval}分ごと` : '']
     .filter(Boolean)
     .join('と')
-  out.push(`fetch: ${when === '' ? 'オフ' : when}${ctx.authStopped ? '（認証の失敗で止めています）' : ''}`)
+  const last = snap.fetch.lastOk === null ? 'まだ成功していません' : `最後の成功: ${ago(now - snap.fetch.lastOk)}`
+  out.push(`fetch: ${when === '' ? 'オフ' : when}（${last}）${ctx.authStopped ? '（認証の失敗で止めています）' : ''}`)
   if (ctx.problems.length > 0) out.push('設定の問題:', ...ctx.problems.map(problem => `  ${problem}`))
   out.push(...slow)
   return out.join('\n')

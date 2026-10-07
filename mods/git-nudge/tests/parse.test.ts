@@ -142,6 +142,7 @@ describe('helpers', () => {
     expect(isAuthError('git@github.com: Permission denied (publickey).')).toBe(true)
     expect(isAuthError('remote: HTTP Basic: Access denied')).toBe(true)
     expect(isAuthError("fatal: Authentication failed for 'https://example.com/r.git/'")).toBe(true)
+    expect(isAuthError('Host key verification failed.\r\nfatal: Could not read from remote repository.')).toBe(true)
     expect(isAuthError("fatal: unable to access 'https://github.com/x/': Could not resolve host: github.com")).toBe(false)
   })
 
