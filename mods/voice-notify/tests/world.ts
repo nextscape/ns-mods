@@ -34,6 +34,8 @@ export type World = {
   played: string[]
   // 各 process.run の stdin（runs と同じ並び）
   inputs: string[]
+  // $.command.register で登録された名前
+  commands: string[]
   agents: Agent[]
   clock: ReturnType<typeof mock.clock>
 }
@@ -69,6 +71,13 @@ export const DEFAULT_CONFIG = {
   notification: { toolLabels: { Bash: 'コマンド実行' } },
 }
 
+// フレーズの少ない設定（2話者 × 7件 = 14件）
+export const PHRASE_CFG = {
+  ...DEFAULT_CONFIG,
+  phrases: { idle: ['入力をお待ちしています。'], stop: { done: ['完了しました。', 'できました。'], brief: { done: ['終わりました。'] } }, mute: ['停止します。'], unmute: ['再開します。'] },
+  subagent: { debounceSeconds: 8, defaultLabel: 'エージェント' },
+}
+
 export function world(on: On, opts: WorldOptions = {}): World {
   const os = opts.os ?? 'windows'
   mock.store(on)
@@ -80,7 +89,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     const c = opts.config ?? DEFAULT_CONFIG
     files.set(`${ROOT}/config.json`, typeof c === 'string' ? c : JSON.stringify(c))
   }
-  const w: World = { files, mtimes, runs: [], fetches: [], asks: [], played: [], inputs: [], agents: opts.agents ?? [], clock }
+  const w: World = { files, mtimes, runs: [], fetches: [], asks: [], played: [], inputs: [], commands: [], agents: opts.agents ?? [], clock }
   const engine = opts.engine ?? true
   const players = opts.linuxPlayers ?? ['pw-play']
   const ok = (r: RunResult = {}) => ({
@@ -172,6 +181,11 @@ export function world(on: On, opts: WorldOptions = {}): World {
   on('classic.PermissionRequest', async () => ({}) as never)
   on('classic.Notification', async () => ({}) as never)
   on('classic.TaskCompleted', async () => ({}) as never)
+  on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+  on('command.register', async ($, e) => {
+    w.commands.push(e.name)
+    return { value: { command: e.name } } as never
+  })
   on('model.complete', async ($, e) => {
     w.asks.push(e as unknown as Record<string, unknown>)
     return { value: { ...(opts.reply ?? { isAnswered: true, text: '要約しました。' }), usage: { input_tokens: 0, output_tokens: 0 } } } as never

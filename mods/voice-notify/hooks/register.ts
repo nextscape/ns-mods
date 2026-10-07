@@ -18,12 +18,27 @@ import type { Role, VoiceConfig } from './decide'
 import { Gate } from './gate'
 import { MIC_QUERY, micInUseFrom, osFrom, removeArgv } from './os'
 import type { Os } from './os'
+import { jobsStamp, phraseBusy, phraseJobs } from './phrases'
+import type { PhraseState } from './phrases'
 import { LINUX_PLAYERS, playArgv, probeArgv } from './player'
+import { HINT, INSTALL_HINT, LEGACY_BIN, LEGACY_STATE_DIRS, doctorReport, ng, ok, parseCommand, step, unknownArg, voiceStatus } from './setup'
+import type { SetupAction, VoiceAction } from './setup'
 import { appendLog, logLine, phraseMemo } from './store'
 import type { Level } from './store'
 import { cleanSummary, clearSpeech, convertReading } from './text'
-import { audioQueryUrl, cachePath, cacheToDrop, parseVersion, synthArgv, synthParams, tuneQuery, versionUrl } from './voicevox'
-import type { SynthParams } from './voicevox'
+import {
+  audioQueryUrl,
+  cachePath,
+  cacheToDrop,
+  engineCandidates,
+  parseVersion,
+  startArgv,
+  synthArgv,
+  synthParams,
+  tuneQuery,
+  versionUrl,
+} from './voicevox'
+import type { FoundEngine, SynthParams } from './voicevox'
 
 // voice-notify の hooks モジュール。Claude Code の出来事を VOICEVOX の声で知らせる。
 //
@@ -43,6 +58,8 @@ let knownOs: Os | null = null
 let linuxPlayer: string | null | undefined
 let warnedConfig = false
 let warnedNoPlayer = false
+// このセッションがフレーズを生成している最中か
+let generating = false
 
 // notify.log は読んで書き直すしかない（$.fs に追記が無い）。同時に来た行はまとめて1回で書く
 const pendingLog: Array<{ root: string; line: string }> = []
@@ -54,6 +71,20 @@ const debounceGate = new Gate()
 
 // 出来事を止めうる hook（gating）は、例外を出しても出来事をそのまま通す（.catch）
 export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    const r = await next(e)
+    await $.command.register({
+      name: 'voice-notify',
+      description: '音声通知のミュート切替（on / off / status）と、導入・診断・撤去（setup [force] / doctor / remove）',
+      argumentHint: '[on|off|status|setup|doctor|remove]',
+    })
+    // 前回の生成が途中で終わっていたら続きを作る
+    void resumePhrases($)
+    return r
+  })
+
+  on('command.run', { command: 'voice-notify' }, async ($, e) => ({ text: await runCommand($, e.args) }))
+
   on('session.compact', async ($, e, next) => {
     // 先読み（precompute）は会話を変えないので数えない。サブエージェントの圧縮も本体のターンとは別
     const counts = e.trigger !== 'precompute' && e.agentId === undefined
@@ -317,7 +348,7 @@ async function speakPhrase($: EngineInterface, ctx: Ctx, role: Role, names: read
     const wav = await pickPhrase($, ctx.root, voice.name, name)
     if (wav) return play($, ctx, wav)
   }
-  await writeLog($, ctx.root, 'WARN', event, `定型フレーズが無い (${names.join(' / ')})。/voice-notify:setup を実行のこと`)
+  await writeLog($, ctx.root, 'WARN', event, `定型フレーズが無い (${names.join(' / ')})。${HINT.setup} を実行のこと`)
   return false
 }
 
@@ -518,4 +549,235 @@ async function onNotice($: EngineInterface, notificationType: string, mainBusy: 
 async function onTask($: EngineInterface): Promise<void> {
   const ctx = await begin($, 'task')
   if (ctx) await speakPhrase($, ctx, 'final', ['task'], 'task')
+}
+
+// ================================================================ ENGINE の場所と起動（setup）
+
+// enginePath → 決まった場所 → 応答だけある（Docker や手で起動した ENGINE）の順
+async function findEngine($: EngineInterface, cfg: VoiceConfig, os: Os): Promise<FoundEngine | null> {
+  const running = (await engineVersion($, enginePort(cfg))) !== null
+  if (cfg.enginePath) {
+    const path = cfg.enginePath.replace(/\\/g, '/')
+    if (await $.fs.exists(path)) return { path, running }
+  }
+  const local = await $.env.get('LOCALAPPDATA')
+  let winget: string[] = []
+  if (os === 'windows' && local) {
+    try {
+      winget = (await $.fs.list(`${local.replace(/\\/g, '/')}/Microsoft/WinGet/Packages`))
+        .filter(d => d.kind === 'dir' && d.name.startsWith('HiroshibaKazuyuki.VOICEVOX'))
+        .map(d => d.name)
+    } catch {
+      winget = []
+    }
+  }
+  const env = { LOCALAPPDATA: local, ProgramFiles: await $.env.get('ProgramFiles'), HOME: await $.env.get('HOME') }
+  for (const c of engineCandidates(os, env, winget)) if (await $.fs.exists(c)) return { path: c, running }
+  return running ? { path: null, running } : null
+}
+
+// Windows の start-engine.ps1 は起動を待って終了コードで答える。それ以外は切り離して起動し、ここで応答を待つ
+async function startEngine($: EngineInterface, cfg: VoiceConfig, os: Os, exe: string): Promise<boolean> {
+  const r = await $.process.run(startArgv(os, $.plugin.root, exe), { timeoutMs: 90_000 })
+  if (os === 'windows') return r.exitCode === 0
+  // 初回はモデル読み込みで十数秒かかる
+  for (let i = 0; i < 60; i++) {
+    if (await engineVersion($, enginePort(cfg))) return true
+    await $.clock.sleep(1000)
+  }
+  return false
+}
+
+// ================================================================ 定型フレーズの生成
+
+async function readProgress($: EngineInterface, root: string): Promise<{ done: number; total: number; at: number } | null> {
+  const path = `${root}/state/phrases-progress`
+  try {
+    const p = JSON.parse(await $.fs.read(path)) as { done: number; total: number }
+    return { done: p.done, total: p.total, at: (await $.fs.stat(path)).mtimeMs }
+  } catch {
+    return null
+  }
+}
+
+async function phraseState($: EngineInterface, ctx: Ctx): Promise<PhraseState> {
+  const jobs = phraseJobs(ctx.cfg, ctx.root)
+  let missing = 0
+  for (const j of jobs) if (!(await $.fs.exists(j.path))) missing++
+  let current = false
+  try {
+    current = (await $.fs.read(`${ctx.root}/state/phrases-stamp`)).trim() === jobsStamp(jobs, ctx.cfg)
+  } catch {
+    current = false
+  }
+  const p = await readProgress($, ctx.root)
+  const busy = generating || phraseBusy(p, await $.clock.now())
+  return { total: jobs.length, missing, current, busy, progress: p && p.done < p.total ? { done: p.done, total: p.total } : null }
+}
+
+// 足りないもの（force ならすべて）を作る。作り終えたら、どの設定で作ったか（stamp）を残す
+async function generatePhrases($: EngineInterface, ctx: Ctx, force: boolean): Promise<void> {
+  if (generating) return
+  generating = true
+  try {
+    const jobs = phraseJobs(ctx.cfg, ctx.root)
+    const stamp = `${ctx.root}/state/phrases-stamp`
+    if (force) await removeFiles($, ctx.os, [...jobs.map(j => j.path), stamp])
+    const speakers = ctx.cfg.speakers ?? {}
+    let made = 0
+    let kept = 0
+    let failed = 0
+    for (const [i, job] of jobs.entries()) {
+      if (!force && (await $.fs.exists(job.path))) kept++
+      else {
+        const voice = { name: job.speaker, id: speakers[job.speaker]?.id ?? voiceFor(ctx.cfg, 'final').id }
+        const r = await synthesize($, synthParams(ctx.cfg, voice, ctx.root, ctx.os), convertReading(job.text, ctx.cfg.speech ?? {}), job.path)
+        if ('error' in r) failed++
+        else made++
+      }
+      await $.fs.write(`${ctx.root}/state/phrases-progress`, JSON.stringify({ done: i + 1, total: jobs.length }))
+    }
+    if (failed === 0) await $.fs.write(stamp, jobsStamp(jobs, ctx.cfg))
+    await writeLog($, ctx.root, failed ? 'WARN' : 'INFO', 'phrases', `生成 ${made} 件 / 既存流用 ${kept} 件 / 失敗 ${failed} 件`)
+  } catch (err) {
+    await writeLog($, ctx.root, 'ERR', 'phrases', String(err))
+  } finally {
+    generating = false
+  }
+}
+
+// session.start から。足りず、ほかのセッションが作っておらず、ENGINE が応答するときだけ続きを作る。
+// 中身が古いだけ（設定を変えた）のときは作り直さない（doctor が force を案内する）
+async function resumePhrases($: EngineInterface): Promise<void> {
+  const ctx = await context($)
+  if (!ctx) return
+  const st = await phraseState($, ctx)
+  if (st.missing === 0 || st.busy) return
+  if (!(await engineVersion($, enginePort(ctx.cfg)))) return
+  await generatePhrases($, ctx, false)
+}
+
+// ================================================================ コマンド
+
+async function legacyFiles($: EngineInterface, root: string): Promise<string[]> {
+  const out: string[] = []
+  for (const d of LEGACY_STATE_DIRS) {
+    try {
+      for (const f of await $.fs.list(`${root}/state/${d}`)) if (f.kind === 'file') out.push(`${root}/state/${d}/${f.name}`)
+    } catch {
+      // 無い
+    }
+  }
+  for (const f of LEGACY_BIN) if (await $.fs.exists(`${root}/bin/${f}`)) out.push(`${root}/bin/${f}`)
+  return out
+}
+
+async function runCommand($: EngineInterface, args: string): Promise<string> {
+  const cmd = parseCommand(args)
+  if (!cmd) return unknownArg(args)
+  return cmd.kind === 'voice' ? runVoice($, cmd.action) : runSetup($, cmd.action)
+}
+
+async function runVoice($: EngineInterface, action: VoiceAction): Promise<string> {
+  const ctx = await context($)
+  if (!ctx) return `config.json を読めません。${HINT.doctor} で確かめてください。`
+  const muted = await isMuted($, ctx.root)
+  if (action === 'status') return voiceStatus(ctx.cfg, ctx.os, muted)
+  const mute = action === 'toggle' ? !muted : action === 'mute'
+  if (mute) {
+    await speakPhrase($, ctx, 'final', ['mute'], 'voice') // 止める前に知らせる
+    await $.fs.write(`${ctx.root}/state/mute`, new Date(await $.clock.now()).toISOString())
+  } else {
+    await removeFiles($, ctx.os, [`${ctx.root}/state/mute`])
+    await speakPhrase($, ctx, 'final', ['unmute'], 'voice')
+  }
+  await writeLog($, ctx.root, 'INFO', 'voice', '手動ミュートを切り替え')
+  return mute ? '音声通知: 停止しました' : '音声通知: 再開しました'
+}
+
+async function runSetup($: EngineInterface, action: SetupAction): Promise<string> {
+  const root = await homeRoot($)
+  if (!root) return ng('ホームが決まりません（USERPROFILE も HOME もありません）')
+  // 撤去は config.json が壊れていてもできるようにする
+  if (action === 'remove') return (await removeAutostartAndHotkey($, root, await detectOs($))).join('\n')
+  const ctx = await context($)
+  if (!ctx) return [step('設定（config.json）'), ng(`config.json を読めません（JSON の書き間違い）。直してから、もう一度実行してください: ${root}/config.json`)].join('\n')
+  return (action === 'doctor' ? await doctor($, ctx) : await install($, ctx, action === 'force')).join('\n')
+}
+
+async function install($: EngineInterface, ctx: Ctx, force: boolean): Promise<string[]> {
+  const port = enginePort(ctx.cfg)
+  const out = ['voice-notify を導入します', `ホーム: ${ctx.root}`, step('1. ホーム'), ok(`config.json: ${ctx.root}/config.json`)]
+  const legacy = await legacyFiles($, ctx.root)
+  if (legacy.length) {
+    await removeFiles($, ctx.os, legacy)
+    out.push(ok(`0.2.0 の残りを消しました（${legacy.length} 件）`))
+  }
+  out.push(step('2. VOICEVOX'))
+  const engine = await findEngine($, ctx.cfg, ctx.os)
+  if (!engine) {
+    out.push(ng(`VOICEVOX が見つかりません。次の方法で導入してから、もう一度 ${HINT.setup} を実行してください。`), `   ${INSTALL_HINT[ctx.os]}`)
+    if (ctx.os !== 'linux') out.push('   別の場所に入れた場合は、config.json の enginePath に ENGINE（vv-engine の run）の絶対パスを書いてください。')
+    return out
+  }
+  out.push(ok(engine.path ?? `場所は不明（port ${port} で応答あり）`))
+  out.push(step('3. ENGINE の起動'))
+  if (engine.running) out.push(ok(`すでに起動済み (port ${port})`))
+  else if (engine.path && (await startEngine($, ctx.cfg, ctx.os, engine.path))) out.push(ok('起動しました'))
+  else {
+    out.push(ng('ENGINE が起動しませんでした（60秒待っても応答なし）'))
+    return out
+  }
+  out.push(step('4. 定型フレーズ'))
+  const st = await phraseState($, ctx)
+  if (!force && st.current && st.missing === 0) out.push(ok(`生成済み（作り直すときは ${HINT.force}）`))
+  else if (st.busy) out.push(ok(`別のセッションが生成中です（${st.progress?.done ?? 0}/${st.total}）`))
+  else {
+    void generatePhrases($, ctx, force)
+    out.push(ok(`裏で生成を始めました（初回は数分）。進み具合は ${HINT.doctor} の「定型フレーズ」で確認できます`))
+  }
+  out.push(...(await installAutostartAndHotkey($, ctx, engine)))
+  out.push('', '導入しました。音声通知は、このセッションからすぐ有効です。', `  診断: ${HINT.doctor}`, `  撤去: ${HINT.remove}`)
+  return out
+}
+
+// 報告だけ。何も変えない
+async function doctor($: EngineInterface, ctx: Ctx): Promise<string[]> {
+  const port = enginePort(ctx.cfg)
+  const curl = await $.process.run([ctx.os === 'windows' ? 'curl.exe' : 'curl', '--version'])
+  let errors: string[] = []
+  try {
+    errors = (await $.fs.read(`${ctx.root}/notify.log`)).trimEnd().split('\n').slice(-200).filter(l => / ERR {2}/.test(l))
+  } catch {
+    errors = []
+  }
+  return doctorReport({
+    pluginRoot: $.plugin.root,
+    root: ctx.root,
+    os: ctx.os,
+    player: ctx.os === 'linux' ? await findLinuxPlayer($) : null,
+    curl: curl.exitCode === 0 ? (curl.stdout.split('\n')[0] ?? '').trim() : null,
+    engine: await findEngine($, ctx.cfg, ctx.os),
+    port,
+    version: await engineVersion($, port),
+    phrases: await phraseState($, ctx),
+    autostart: await autostartStatus($, ctx),
+    muted: await isMuted($, ctx.root),
+    legacy: (await legacyFiles($, ctx.root)).length,
+    errors,
+  })
+}
+
+// ================================================================ ログオン時の ENGINE 起動とホットキー（Task 10 で入れる）
+
+async function installAutostartAndHotkey(_$: EngineInterface, _ctx: Ctx, _engine: FoundEngine): Promise<string[]> {
+  return []
+}
+
+async function removeAutostartAndHotkey(_$: EngineInterface, _root: string, _os: Os): Promise<string[]> {
+  return ['voice-notify を撤去します（ホームは残します）']
+}
+
+async function autostartStatus(_$: EngineInterface, _ctx: Ctx): Promise<string[]> {
+  return []
 }
