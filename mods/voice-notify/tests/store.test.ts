@@ -19,6 +19,7 @@ describe('store', () => {
 
   test('phraseMemo names the last-pick file per phrase folder', () => {
     expect(phraseMemo('C:/vn', 'stop/brief/done')).toBe('C:/vn/state/last_phrase_stop_brief_done')
+    expect(phraseMemo('C:/vn', 'stop\\brief\\done')).toBe('C:/vn/state/last_phrase_stop_brief_done')
   })
 
   test('Gate lets one through at a time, in arrival order', async () => {

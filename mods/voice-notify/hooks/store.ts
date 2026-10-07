@@ -21,5 +21,5 @@ export function appendLog(old: string, lines: readonly string[]): string {
 
 // フレーズのフォルダ（'stop/brief/done' など）ごとに、直前に選んだ wav を覚えるファイル（0.2.0 と同じ名前）
 export function phraseMemo(root: string, name: string): string {
-  return `${root}/state/last_phrase_${name.replace(/[\/]/g, '_')}`
+  return `${root}/state/last_phrase_${name.replace(/[\\/]/g, '_')}`
 }
