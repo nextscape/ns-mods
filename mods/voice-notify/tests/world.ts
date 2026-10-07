@@ -22,6 +22,10 @@ export type WorldOptions = {
   linuxPlayers?: string[]
   // 起動できない（入っていない）コマンド。$.process.run が reject する
   missing?: string[]
+  // fs.exists が例外を出す（読めない場所など）
+  existsFails?: boolean
+  // $.model.complete が例外を出す
+  modelThrows?: boolean
   now?: number
   // VOICE_NOTIFY_HOME と OS に足す環境変数
   env?: Record<string, string>
@@ -124,6 +128,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     return { value: undefined }
   })
   on('fs.exists', async ($, e) => {
+    if (opts.existsFails) throw new Error(`EACCES ${e.path}`)
     const p = key(e.path)
     return { value: files.has(p) || [...files.keys()].some(k => k.startsWith(`${p}/`)) }
   })
@@ -203,6 +208,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
   })
   on('model.complete', async ($, e) => {
     w.asks.push(e as unknown as Record<string, unknown>)
+    if (opts.modelThrows) throw new Error('model unavailable')
     return { value: { ...(opts.reply ?? { isAnswered: true, text: '要約しました。' }), usage: { input_tokens: 0, output_tokens: 0 } } } as never
   })
   return w

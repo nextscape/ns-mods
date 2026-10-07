@@ -15,7 +15,7 @@ import {
   voiceHome,
 } from './decide'
 import type { Role, VoiceConfig } from './decide'
-import { Gate } from './gate'
+import { Gate, capture } from './gate'
 import { MIC_QUERY, micInUseFrom, osFrom, removeArgv } from './os'
 import type { Os } from './os'
 import { jobsStamp, phraseBusy, phraseJobs } from './phrases'
@@ -80,7 +80,7 @@ export const register: Register = on => {
       argumentHint: '[on|off|status|setup|doctor|remove]',
     })
     // 前回の生成が途中で終わっていたら続きを作る
-    background(resumePhrases($))
+    void background($, 'phrases', resumePhrases($))
     return r
   })
 
@@ -105,31 +105,52 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     working.delete(e.turnId)
     if (compacting === 0 && !e.isAborted) {
-      background(e.agentId ? onAgentTurn($, e) : onMainTurn($, e))
+      void background($, e.agentId ? 'agentstop' : 'stop', e.agentId ? onAgentTurn($, e) : onMainTurn($, e))
     }
     return next(e)
   })
 
   on('classic.PermissionRequest', async ($, e, next) => {
-    background(onPermission($, e.tool_name))
+    void background($, 'permission', onPermission($, e.tool_name))
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('classic.Notification', async ($, e, next) => {
-    background(onNotice($, e.notification_type, working.size > 0))
+    void background($, 'notification', onNotice($, e.notification_type, working.size > 0))
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('classic.TaskCompleted', async ($, e, next) => {
-    background(onTask($))
+    void background($, 'task', onTask($))
     return next(e)
   }).catch(($, e, next) => next(e))
 }
 
-// 裏で流す処理（hook は待たない）。失敗は中でログに残すので、ここで受け止めるのは
-// モジュールが外れた後（セッションの終了・再読み込み）など、書き残す先も無いときだけ
-function background(work: Promise<unknown>): void {
-  work.catch(() => {})
+// 裏で流す処理（hook は待たない）。失敗はホームの notify.log に ERR で残す。
+// それもできない（モジュールが外れた後など）ときはデバッグログに、それもできなければあきらめる
+async function background($: EngineInterface, event: string, work: Promise<unknown>): Promise<void> {
+  try {
+    await work
+  } catch (err) {
+    await logFailure($, event, err)
+  }
+}
+
+async function logFailure($: EngineInterface, event: string, err: unknown): Promise<void> {
+  try {
+    const root = await homeRoot($)
+    if (root) {
+      await writeLog($, root, 'ERR', event, String(err))
+      return
+    }
+  } catch {
+    // ホームが分からない
+  }
+  try {
+    $.ui.log(`voice-notify: ${event}: ${String(err)}`, { to: 'debug' })
+  } catch {
+    // 知らせる先が無い
+  }
 }
 
 type RunInit = Parameters<EngineInterface['process']['run']>[1]
@@ -447,37 +468,37 @@ async function runningAgents($: EngineInterface): Promise<number> {
   }
 }
 
-// ================================================================ イベントごとの流れ（例外は外に出さずログに残す）
+// ================================================================ イベントごとの流れ（失敗は background がログに残す）
 
 async function onMainTurn($: EngineInterface, e: TurnCompleteInput): Promise<void> {
-  const event = e.reason === 'error' ? 'failure' : 'stop'
+  // API エラーで終わったターンと、応答を拒否されたターンは、どちらも「うまくいかなかった」と知らせる
+  const failed = e.reason === 'error' || e.reason === 'refusal'
+  const event = failed ? 'failure' : 'stop'
   const ctx = await begin($, event)
   if (!ctx) return
-  try {
-    if (e.reason === 'error') {
-      await speakPhrase($, ctx, 'final', ['failure'], event)
-      return
-    }
-    const running = await runningAgents($)
-    const alive = (await engineVersion($, enginePort(ctx.cfg))) !== null
-    const plan = planStop({ cfg: ctx.cfg, answer: e.answer, durationMs: e.durationMs, running, engineAlive: alive })
-    const kase = plan.pcase !== plan.case ? `${plan.case}→${plan.pcase}` : plan.case
-    const role = plan.role === 'interim' ? `中間・実行中${running}件` : '最終'
-    await writeLog($, ctx.root, 'INFO', event,
-      `本文 ${e.answer.length}字 / 作業 ${(e.durationMs / 1000).toFixed(1)}秒 / ケース ${kase}${plan.brief ? ' (brief)' : ''} / ${role} [${voiceFor(ctx.cfg, plan.role).name}]`)
-    if (!plan.read) {
-      await speakPhrase($, ctx, plan.role, plan.phrases, event)
-      return
-    }
-    const body = prepareBody($, ctx, plan.role, e.answer)
-    await speakPhrase($, ctx, plan.role, plan.phrases, event)
-    const b = await body
-    if (!b) return
-    await writeLog($, ctx.root, 'INFO', event, `読み上げ: ${b.text}`)
-    await playSynth($, ctx, event, b.r)
-  } catch (err) {
-    await writeLog($, ctx.root, 'ERR', event, String(err))
+  if (failed) {
+    await speakPhrase($, ctx, 'final', ['failure'], event)
+    return
   }
+  const running = await runningAgents($)
+  const alive = (await engineVersion($, enginePort(ctx.cfg))) !== null
+  const plan = planStop({ cfg: ctx.cfg, answer: e.answer, durationMs: e.durationMs, running, engineAlive: alive })
+  const kase = plan.pcase !== plan.case ? `${plan.case}→${plan.pcase}` : plan.case
+  const role = plan.role === 'interim' ? `中間・実行中${running}件` : '最終'
+  await writeLog($, ctx.root, 'INFO', event,
+    `本文 ${e.answer.length}字 / 作業 ${(e.durationMs / 1000).toFixed(1)}秒 / ケース ${kase}${plan.brief ? ' (brief)' : ''} / ${role} [${voiceFor(ctx.cfg, plan.role).name}]`)
+  if (!plan.read) {
+    await speakPhrase($, ctx, plan.role, plan.phrases, event)
+    return
+  }
+  // 要約と合成は、定型フレーズを鳴らしている間に進める。始めた時点で結果を受け止めておく
+  const body = capture(prepareBody($, ctx, plan.role, e.answer))
+  await speakPhrase($, ctx, plan.role, plan.phrases, event)
+  const b = await body
+  if (!b.ok) throw b.error
+  if (!b.value) return
+  await writeLog($, ctx.root, 'INFO', event, `読み上げ: ${b.value.text}`)
+  await playSynth($, ctx, event, b.value.r)
 }
 
 async function onAgentTurn($: EngineInterface, e: TurnCompleteInput): Promise<void> {
@@ -485,37 +506,39 @@ async function onAgentTurn($: EngineInterface, e: TurnCompleteInput): Promise<vo
   if (e.reason !== 'answer') return
   const ctx = await context($)
   if (!ctx) return
-  try {
-    const agent = (await $.agent.list()).find(a => a.id === e.agentId)
-    // /compact は開始の無い停止を出す。エンジンが知らない agent は本物のサブエージェントではない
-    if (!agent) {
-      await writeLog($, ctx.root, 'INFO', event, `開始を見ていない停止のため無視 (id=${e.agentId})`)
-      return
-    }
-    await writeLog($, ctx.root, 'INFO', event, '発火')
-    const why = await silence($, ctx)
-    if (why) {
-      await writeLog($, ctx.root, 'INFO', event, `無音化: ${why}`)
-      return
-    }
-    const deb = (ctx.cfg.subagent?.debounceSeconds ?? 8) * 1000
-    const since = await claimSpeech($, ctx.root, deb)
-    if (since !== null) {
-      await writeLog($, ctx.root, 'INFO', event, `連発抑制のため無音 (${(since / 1000).toFixed(1)}秒 < ${deb / 1000}秒)`)
-      return
-    }
-    const report = (await summarize($, ctx, 'agentstop', 'interim', e.answer)) ?? agentReportFallback(pickFor(ctx.cfg, e.answer), ctx.cfg.speech ?? {})
-    const text = agentText(agent.description || null, report)
-    if (!text) {
-      await writeLog($, ctx.root, 'WARN', event, '説明も報告も取れないので定型フレーズにフォールバック')
-      await speakPhrase($, ctx, 'interim', ['agent/_default'], event)
-      return
-    }
-    await writeLog($, ctx.root, 'INFO', event, `読み上げ [${voiceFor(ctx.cfg, 'interim').name}]: ${text}`)
-    await playSynth($, ctx, event, await synthFor($, ctx, 'interim', text))
-  } catch (err) {
-    await writeLog($, ctx.root, 'ERR', event, String(err))
+  const agent = (await $.agent.list()).find(a => a.id === e.agentId)
+  // /compact は開始の無い停止を出す。エンジンが知らない agent は本物のサブエージェントではない
+  if (!agent) {
+    await writeLog($, ctx.root, 'INFO', event, `開始を見ていない停止のため無視 (id=${e.agentId})`)
+    return
   }
+  await writeLog($, ctx.root, 'INFO', event, '発火')
+  const why = await silence($, ctx)
+  if (why) {
+    await writeLog($, ctx.root, 'INFO', event, `無音化: ${why}`)
+    return
+  }
+  const deb = (ctx.cfg.subagent?.debounceSeconds ?? 8) * 1000
+  const since = await claimSpeech($, ctx.root, deb)
+  if (since !== null) {
+    await writeLog($, ctx.root, 'INFO', event, `連発抑制のため無音 (${(since / 1000).toFixed(1)}秒 < ${deb / 1000}秒)`)
+    return
+  }
+  // ENGINE が応答しなければ合成できない。要約（Haiku）は呼ばず、作ってある代わりのフレーズで知らせる
+  if (!(await engineVersion($, enginePort(ctx.cfg)))) {
+    await writeLog($, ctx.root, 'WARN', event, `VOICEVOX ENGINE に接続できない (port ${enginePort(ctx.cfg)})。定型フレーズのみ再生`)
+    await speakPhrase($, ctx, 'interim', ['agent/_default'], event)
+    return
+  }
+  const report = (await summarize($, ctx, 'agentstop', 'interim', e.answer)) ?? agentReportFallback(pickFor(ctx.cfg, e.answer), ctx.cfg.speech ?? {})
+  const text = agentText(agent.description || null, report)
+  if (!text) {
+    await writeLog($, ctx.root, 'WARN', event, '説明も報告も取れないので定型フレーズにフォールバック')
+    await speakPhrase($, ctx, 'interim', ['agent/_default'], event)
+    return
+  }
+  await writeLog($, ctx.root, 'INFO', event, `読み上げ [${voiceFor(ctx.cfg, 'interim').name}]: ${text}`)
+  await playSynth($, ctx, event, await synthFor($, ctx, 'interim', text))
 }
 
 // 連発抑制。直前の読み上げから deb ミリ秒たっていれば今の時刻を記録して null、たっていなければ経過ミリ秒。
@@ -543,15 +566,14 @@ async function onPermission($: EngineInterface, toolName: string): Promise<void>
   const event = 'permission'
   const ctx = await begin($, event)
   if (!ctx) return
-  try {
-    const text = permissionText(ctx.cfg, toolName)
-    const r = synthFor($, ctx, 'final', text)
-    await speakPhrase($, ctx, 'final', ['permission'], event)
-    await writeLog($, ctx.root, 'INFO', event, `読み上げ: ${text}`)
-    await playSynth($, ctx, event, await r)
-  } catch (err) {
-    await writeLog($, ctx.root, 'ERR', event, String(err))
-  }
+  const text = permissionText(ctx.cfg, toolName)
+  // 合成は定型フレーズと並行して進める。始めた時点で結果を受け止めておく
+  const r = capture(synthFor($, ctx, 'final', text))
+  await speakPhrase($, ctx, 'final', ['permission'], event)
+  const s = await r
+  if (!s.ok) throw s.error
+  await writeLog($, ctx.root, 'INFO', event, `読み上げ: ${text}`)
+  await playSynth($, ctx, event, s.value)
 }
 
 async function onNotice($: EngineInterface, notificationType: string, mainBusy: boolean): Promise<void> {
@@ -559,23 +581,19 @@ async function onNotice($: EngineInterface, notificationType: string, mainBusy: 
   if (!kind) return
   const ctx = await begin($, kind)
   if (!ctx) return
-  try {
-    if (kind === 'idle') {
-      // idle_prompt はサブエージェントを見ていない。待っているのは利用者の入力ではない
-      const running = await runningAgents($)
-      if (running > 0) {
-        await writeLog($, ctx.root, 'INFO', kind, `サブエージェント実行中 (${running}件) のため無音`)
-        return
-      }
-      if (mainBusy) {
-        await writeLog($, ctx.root, 'INFO', kind, 'メインが作業中のため無音')
-        return
-      }
+  if (kind === 'idle') {
+    // idle_prompt はサブエージェントを見ていない。待っているのは利用者の入力ではない
+    const running = await runningAgents($)
+    if (running > 0) {
+      await writeLog($, ctx.root, 'INFO', kind, `サブエージェント実行中 (${running}件) のため無音`)
+      return
     }
-    await speakPhrase($, ctx, 'final', [kind], kind)
-  } catch (err) {
-    await writeLog($, ctx.root, 'ERR', kind, String(err))
+    if (mainBusy) {
+      await writeLog($, ctx.root, 'INFO', kind, 'メインが作業中のため無音')
+      return
+    }
   }
+  await speakPhrase($, ctx, 'final', [kind], kind)
 }
 
 async function onTask($: EngineInterface): Promise<void> {
@@ -685,8 +703,6 @@ async function generatePhrases($: EngineInterface, ctx: Ctx, force: boolean): Pr
     }
     if (failed === 0) await $.fs.write(stamp, jobsStamp(jobs, ctx.cfg))
     await writeLog($, ctx.root, failed ? 'WARN' : 'INFO', 'phrases', `生成 ${made} 件 / 既存流用 ${kept} 件 / 失敗 ${failed} 件`)
-  } catch (err) {
-    await writeLog($, ctx.root, 'ERR', 'phrases', String(err))
   } finally {
     generating = false
   }
@@ -778,7 +794,7 @@ async function install($: EngineInterface, ctx: Ctx, force: boolean): Promise<st
   if (!force && st.current && st.missing === 0) out.push(ok(`生成済み（作り直すときは ${HINT.force}）`))
   else if (st.busy) out.push(ok(`別のセッションが生成中です（${st.progress?.done ?? 0}/${st.total}）`))
   else {
-    background(generatePhrases($, ctx, force))
+    void background($, 'phrases', generatePhrases($, ctx, force))
     out.push(ok(`裏で生成を始めました（初回は数分）。進み具合は ${HINT.doctor} の「定型フレーズ」で確認できます`))
   }
   out.push(...(await installAutostartAndHotkey($, ctx, engine)))

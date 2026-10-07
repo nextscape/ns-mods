@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { Gate } from '../hooks/gate'
+import { Gate, capture } from '../hooks/gate'
 import { appendLog, logLine, phraseMemo } from '../hooks/store'
 
 describe('store', () => {
@@ -34,5 +34,14 @@ describe('store', () => {
     }
     await Promise.all([work('a', 3), work('b', 1), work('c', 0)])
     expect(seen).toEqual(['a+', 'a-', 'b+', 'b-', 'c+', 'c-'])
+  })
+
+  test('capture holds a result or a failure until it is awaited', async () => {
+    const failing = capture(Promise.reject(new Error('boom')))
+    await Promise.resolve()
+    expect(await capture(Promise.resolve(1))).toEqual({ ok: true, value: 1 })
+    const f = await failing
+    expect(f.ok).toBe(false)
+    expect(String(!f.ok && f.error)).toMatch(/boom/)
   })
 })

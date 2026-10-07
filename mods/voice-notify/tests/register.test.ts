@@ -79,6 +79,36 @@ describe('voice-notify', () => {
     expect(log(w)).toMatch(/無音化: 手動ミュート/)
   })
 
+  test('a refused turn plays the failure phrase, not done', async ($, on) => {
+    const w = setup(on)
+    await turn($, { reason: 'refusal' as never, answer: '' })
+    await settle(w)
+    expect(spoke(w)).toEqual(['phrases/metan/failure'])
+  })
+
+  test('a summary call that throws while the phrase plays is logged, not left unhandled', async ($, on) => {
+    const w = setup(on, { modelThrows: true })
+    await turn($)
+    await settle(w)
+    expect(spoke(w)).toEqual(['phrases/metan/stop/done'])
+    expect(log(w)).toMatch(/ERR  stop +.*model\.complete/)
+  })
+
+  test('a failure before anything plays is still logged', async ($, on) => {
+    const w = setup(on, { existsFails: true })
+    await $.classic.TaskCompleted({ task_id: '1', task_subject: 's' } as never)
+    await settle(w)
+    expect(log(w)).toMatch(/ERR  task +.*fs\.exists/)
+  })
+
+  test('with the engine down, a subagent report plays the fallback phrase and asks Haiku nothing', async ($, on) => {
+    const w = setup(on, { engine: false, agents: [{ id: 'a1', description: '調査', type: 'Explore', status: 'completed' }] })
+    await turn($, { agentId: 'a1' })
+    await settle(w)
+    expect(spoke(w)).toEqual(['phrases/zundamon/agent/_default'])
+    expect(w.asks).toEqual([])
+  })
+
   test('an API error plays the failure phrase', async ($, on) => {
     const w = setup(on)
     await turn($, { reason: 'error', answer: '' })
