@@ -116,6 +116,9 @@ const run = ($: Engine, args = '') =>
     presentation: { isFullscreen: false, columns: 80 },
   })
 
+// The person sending a prompt.
+const submit = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
+
 let turns = 0
 async function turn($: Engine, clock: MockClock) {
   const turnId = `t${++turns}`
@@ -415,8 +418,8 @@ describe('telling Claude', () => {
   test('Claude hears of the state once, not again until it changes', async ($, on) => {
     const { seen, clock } = world(on, { 'status --porcelain=v2': BEHIND })
     await begin($, clock)
-    await $.prompt.submit({ text: 'a' })
-    await $.prompt.submit({ text: 'b' })
+    await submit($, 'a')
+    await submit($, 'b')
     expect(seen.context[0]).toEqual([`[git-nudge] このリポジトリの状態: origin/main より 2 遅れ\n${WARNING}`])
     expect(seen.context[1]).toBeUndefined()
   })
@@ -426,10 +429,10 @@ describe('telling Claude', () => {
       'status --porcelain=v2': [...BEHIND, { out: FIXTURES['status-insync'] }],
     })
     await begin($, clock)
-    await $.prompt.submit({ text: 'a' })
+    await submit($, 'a')
     await turn($, clock)
-    await $.prompt.submit({ text: 'b' })
-    await $.prompt.submit({ text: 'c' })
+    await submit($, 'b')
+    await submit($, 'c')
     expect(seen.context[1]).toEqual([RESOLVED])
     expect(seen.context[2]).toBeUndefined()
   })
@@ -437,7 +440,7 @@ describe('telling Claude', () => {
   test('all in sync adds nothing', async ($, on) => {
     const { seen, clock } = world(on)
     await begin($, clock)
-    await $.prompt.submit({ text: 'a' })
+    await submit($, 'a')
     expect(seen.context[0]).toBeUndefined()
   })
 
@@ -447,14 +450,112 @@ describe('telling Claude', () => {
       'config --get-regexp': { out: 'git-nudge.tellclaude false\n' },
     })
     await begin($, clock)
-    await $.prompt.submit({ text: 'a' })
+    await submit($, 'a')
     expect(seen.context[0]).toBeUndefined()
   })
 
   test('commits left unpushed before the session are told', async ($, on) => {
     const { seen, clock } = world(on, { 'status --porcelain=v2': { out: FIXTURES['status-ahead'] } })
     await begin($, clock)
-    await $.prompt.submit({ text: 'a' })
+    await submit($, 'a')
     expect(seen.context[0]).toEqual([`[git-nudge] このリポジトリの状態: 前回からの未 push 1 件\n${WARNING}`])
+  })
+})
+
+// The fixture repository: feat-merged (merged) and feat-squash (squashed) lost
+// their upstream; feat-wt too, but it is checked out in another worktree.
+const TIDY: Replies = {
+  'for-each-ref --format=': { out: FIXTURES['branches'] },
+  'symbolic-ref --quiet --short HEAD': { out: 'main\n' },
+  'ls-remote --heads': { out: FIXTURES['ls-remote'] },
+  'for-each-ref --merged': { out: FIXTURES['merged'] },
+  'worktree list': { out: FIXTURES['worktrees'] },
+  'symbolic-ref --quiet --short refs/remotes': { out: 'origin/main\n' },
+  'branch -d': {},
+}
+
+describe('tidy and the command', () => {
+  test('tidy lists, asks, and deletes only the merged branch, with -d', async ($, on) => {
+    const { seen, clock } = world(on, TIDY, { answer: '消せるブランチをすべて消す（1 本）' })
+    await begin($, clock)
+    const { text } = await run($, 'tidy')
+    expect(seen.asked).toEqual(['upstream が消えたブランチのうち、1 本を消せます。消しますか？'])
+    expect(seen.git).toContain('branch -d feat-merged')
+    expect(seen.git.some(line => line.startsWith('branch -D'))).toBe(false)
+    expect(seen.git.some(line => line.includes('feat-squash') && line.startsWith('branch'))).toBe(false)
+    expect(text).toContain('git branch feat-merged feb4622258cea9cb375166f35dbd128e5144ec82')
+    expect(text).toContain('git branch -D feat-squash')
+    expect(text).toContain('git worktree prune')
+  })
+
+  test('choosing to stop deletes nothing', async ($, on) => {
+    const { seen, clock } = world(on, TIDY, { answer: 'やめる' })
+    await begin($, clock)
+    expect((await run($, 'tidy')).text).toContain('片付けを取りやめました')
+    expect(seen.git.some(line => line.startsWith('branch -d'))).toBe(false)
+  })
+
+  test('closing the question deletes nothing', async ($, on) => {
+    const { seen, clock } = world(on, TIDY)
+    await begin($, clock)
+    expect((await run($, 'tidy')).text).toContain('片付けを取りやめました（確認できませんでした）')
+    expect(seen.git.some(line => line.startsWith('branch -d'))).toBe(false)
+  })
+
+  test('a session without a person to ask does not tidy', async ($, on) => {
+    const { seen, clock } = world(on, TIDY)
+    await begin($, clock, false)
+    expect((await run($, 'tidy')).text).toBe('対話できない環境では片付けできません')
+    expect(seen.asked).toEqual([])
+  })
+
+  test('nothing to tidy says so without asking', async ($, on) => {
+    const { seen, clock } = world(on, {
+      ...TIDY,
+      'ls-remote --heads': { out: FIXTURES['ls-remote'] + 'x\trefs/heads/feat-merged\nx\trefs/heads/feat-squash\nx\trefs/heads/feat-wt\n' },
+      'worktree list': { out: `worktree ${ROOT}\nHEAD b7bfd6b\nbranch refs/heads/main\n` },
+    })
+    await begin($, clock)
+    expect((await run($, 'tidy')).text).toBe('upstream が消えたブランチはありません。')
+    expect(seen.asked).toEqual([])
+  })
+
+  test('off stops looking and fetching for the session; on starts again', async ($, on) => {
+    const { seen, clock } = world(on)
+    await begin($, clock)
+    expect((await run($, 'off')).text).toBe('このセッションでは止めました（/git-nudge on で再開）')
+    await pass(clock, 15 * MINUTE)
+    expect(fetches(seen.git)).toBe(1)
+    expect((await run($)).text).toBe('このセッションでは止めています（/git-nudge on で再開）')
+    await run($, 'on')
+    expect(fetches(seen.git)).toBe(2)
+  })
+
+  test('/git-nudge shows the state, the fetch schedule and settings it ignored', async ($, on) => {
+    const { clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'config --get-regexp': { out: 'git-nudge.band maybe\ngit-nudge.fetchintervall 3\n' },
+    })
+    await begin($, clock)
+    const { text } = await run($)
+    expect(text).toContain(`リポジトリ: ${ROOT}`)
+    expect(text).toContain('状態: main ↓2 · fetch たった今')
+    expect(text).toContain('  origin/main より 2 遅れ')
+    expect(text).toContain('fetch: 開始時と5分ごと')
+    expect(text).toContain('  git-nudge.band=maybe は true / false ではないので無視しました')
+    expect(text).toContain('  git-nudge.fetchintervall は知らない設定です')
+  })
+
+  test('an unknown argument is refused', async ($, on) => {
+    world(on)
+    expect((await run($, 'push')).text).toBe('知らない引数です: push（pull / tidy / on / off。省略すると状態を表示）')
+  })
+
+  test('git status timing out again and again suggests turning the mod off', async ($, on) => {
+    const { clock } = world(on, { 'status --porcelain=v2': { deny: 'timed out' } })
+    await begin($, clock)
+    expect((await run($)).text).toBe(
+      '状態をまだ取得していません\ngit status が時間切れになっています。重いリポジトリでは git config git-nudge.enabled false で止められます',
+    )
   })
 })
