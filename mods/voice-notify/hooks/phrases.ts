@@ -24,8 +24,9 @@ export function phraseJobs(cfg: VoiceConfig, root: string): PhraseJob[] {
   const out: PhraseJob[] = []
   for (const speaker of Object.keys(cfg.speakers ?? {})) {
     walk(cfg.phrases ?? {}, `${root}/phrases/${speaker}`, speaker, out)
-    // 説明も報告も取れなかったサブエージェントの完了
-    out.push({ speaker, path: `${root}/phrases/${speaker}/agent/_default.wav`, text: `${cfg.subagent?.defaultLabel ?? 'エージェント'}が完了しました。` })
+    // 説明も報告も取れなかったサブエージェントの完了。0.2.0 は agent/_default.wav というファイルだったが、
+    // 再生はフォルダから選ぶので、ほかのフレーズと同じ形（フォルダの中の NN.wav）にそろえる
+    out.push({ speaker, path: `${root}/phrases/${speaker}/agent/_default/01.wav`, text: `${cfg.subagent?.defaultLabel ?? 'エージェント'}が完了しました。` })
   }
   return out
 }

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { ROOT, world } from './world'
+import { DEFAULT_CONFIG, ROOT, world } from './world'
 import type { World, WorldOptions } from './world'
 
 // summaryMinChars（80）を超える長さにする
@@ -216,6 +216,29 @@ describe('voice-notify', () => {
     await settle(w)
     const sh = w.runs.find(a => a[0] === 'sh' && a[1]?.endsWith('/scripts/posix/play.sh'))!
     expect(sh.slice(2, 4)).toEqual([`${ROOT}/state/playback.lock`, 'paplay'])
+  })
+
+  test('a home with Japanese and spaces: the folder is made before curl writes, without --create-dirs', async ($, on) => {
+    // Windows 標準の curl は --create-dirs で非 ASCII のフォルダを作れない（exit 23。実測）
+    const home = 'C:/ホーム/山田 太郎/voice-notify'
+    const files: Record<string, string> = { [`${home}/config.json`]: JSON.stringify(DEFAULT_CONFIG) }
+    for (const [k, v] of Object.entries(phrases())) files[k.replace(ROOT, home)] = v
+    const w = world(on, { config: null, env: { VOICE_NOTIFY_HOME: home }, files })
+    await turn($)
+    await settle(w)
+    const curl = w.runs.find(a => a[0] === 'curl.exe')!
+    expect(curl).not.toContain('--create-dirs')
+    expect(curl[curl.indexOf('-o') + 1]).toMatch(new RegExp(`^${home}/cache/[0-9a-f]{16}\.wav$`))
+    expect(w.files.has(`${home}/cache/.keep`)).toBe(true)
+    expect(w.played.some(p => p.startsWith(`${home}/cache/`))).toBe(true)
+  })
+
+  test('a curl that cannot start is logged as a synthesis failure, after the phrase', async ($, on) => {
+    const w = setup(on, { missing: ['curl.exe'] })
+    await turn($)
+    await settle(w)
+    expect(spoke(w)).toEqual(['phrases/metan/stop/done'])
+    expect(log(w)).toMatch(/ERR  stop +合成失敗: synthesis: curl -1 /)
   })
 
   test('on Linux with no player it plays nothing and says so once', async ($, on) => {

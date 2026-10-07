@@ -7,10 +7,18 @@ export function osFrom(osEnv: string | undefined, uname: string): Os {
   return uname.trim() === 'Darwin' ? 'macos' : 'linux'
 }
 
-// $.fs は削除できないので、削除は OS のコマンドで行う。消すものが無ければ null
-export function removeArgv(os: Os, paths: readonly string[]): string[] | null {
+// $.fs は削除できないので、削除は OS のコマンドで行う。消すものが無ければ null。
+// Windows は cmd の del を使わない：コマンドラインが 8191 文字を超えると何も消えず、パスの & や % を cmd が解釈する。
+// パスを stdin で1行ずつ remove.ps1 に渡し、Remove-Item -LiteralPath で消す
+export function removeArgv(os: Os, pluginRoot: string, paths: readonly string[]): { argv: string[]; stdin: string } | null {
   if (paths.length === 0) return null
-  return os === 'windows' ? ['cmd', '/d', '/c', 'del', '/f', '/q', ...paths.map(p => p.replace(/\//g, '\\'))] : ['rm', '-f', '--', ...paths]
+  if (os === 'windows') {
+    return {
+      argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `${pluginRoot}/scripts/windows/remove.ps1`.replace(/\//g, '\\')],
+      stdin: paths.map(p => p.replace(/\//g, '\\')).join('\n'),
+    }
+  }
+  return { argv: ['rm', '-f', '--', ...paths], stdin: '' }
 }
 
 // マイクを使っているアプリ（Windows）。出力は日本語の環境では CP932 で、$.process.run は UTF-8 として読む。

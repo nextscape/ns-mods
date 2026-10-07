@@ -132,6 +132,19 @@ function background(work: Promise<unknown>): void {
   work.catch(() => {})
 }
 
+type RunInit = Parameters<EngineInterface['process']['run']>[1]
+type RunResult = { exitCode: number; stdout: string; stderr: string }
+
+// 外部コマンド。$.process.run はコマンドを起動できない（入っていない）と reject するので、
+// 終了コードの失敗（-1）と同じに扱う。doctor が「見つからない」と言えるように、例外で止めない
+async function run($: EngineInterface, argv: readonly string[], init?: RunInit): Promise<RunResult> {
+  try {
+    return await $.process.run(argv, init)
+  } catch (err) {
+    return { exitCode: -1, stdout: '', stderr: String(err) }
+  }
+}
+
 // ================================================================ 前提（ホーム・設定・OS）
 
 async function detectOs($: EngineInterface): Promise<Os> {
@@ -140,7 +153,7 @@ async function detectOs($: EngineInterface): Promise<Os> {
   let uname = ''
   if (env !== 'Windows_NT') {
     try {
-      uname = (await $.process.run(['uname', '-s'])).stdout
+      uname = (await run($, ['uname', '-s'])).stdout
     } catch {
       uname = '' // uname が無い環境は Linux とみなす
     }
@@ -193,9 +206,10 @@ async function context($: EngineInterface): Promise<Ctx | null> {
 
 // ================================================================ ホームのファイル
 
-async function removeFiles($: EngineInterface, os: Os, paths: readonly string[]): Promise<void> {
-  const argv = removeArgv(os, paths)
-  if (argv) await $.process.run(argv)
+// 消せたか（消すものが無ければ true）
+async function removeFiles($: EngineInterface, os: Os, paths: readonly string[]): Promise<boolean> {
+  const cmd = removeArgv(os, $.plugin.root, paths)
+  return !cmd || (await run($, cmd.argv, cmd.stdin ? { stdin: cmd.stdin } : undefined)).exitCode === 0
 }
 
 // 書けなくても例外は出さない（ログのために読み上げを止めない）
@@ -283,7 +297,10 @@ async function synthesize($: EngineInterface, p: SynthParams, text: string, out?
   } catch (err) {
     return { error: `audio_query: ${String(err)}` }
   }
-  const r = await $.process.run(synthArgv(p, path), { stdin: JSON.stringify(tuneQuery(query, p)), timeoutMs: 130_000 })
+  // 書き込み先のフォルダを先に作る（$.fs.write は途中のフォルダも作る）
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  if (!(await $.fs.exists(dir))) await $.fs.write(`${dir}/.keep`, '')
+  const r = await run($, synthArgv(p, path), { stdin: JSON.stringify(tuneQuery(query, p)), timeoutMs: 130_000 })
   if (r.exitCode !== 0) return { error: `synthesis: curl ${r.exitCode} ${r.stderr.trim()}` }
   return { path, cached: false }
 }
@@ -301,7 +318,7 @@ async function pruneCache($: EngineInterface, ctx: Ctx): Promise<void> {
 async function findLinuxPlayer($: EngineInterface): Promise<string | null> {
   if (linuxPlayer !== undefined) return linuxPlayer
   for (const name of LINUX_PLAYERS) {
-    const r = await $.process.run(probeArgv(name))
+    const r = await run($, probeArgv(name))
     if (r.exitCode === 0 && r.stdout.trim()) return (linuxPlayer = name)
   }
   return (linuxPlayer = null)
@@ -320,7 +337,7 @@ async function play($: EngineInterface, ctx: Ctx, wav: string): Promise<boolean>
   }
   const release = await playGate.enter()
   try {
-    const r = await $.process.run(argv, { timeoutMs: 120_000 })
+    const r = await run($, argv, { timeoutMs: 120_000 })
     if (r.exitCode === 0) return true
     await writeLog($, ctx.root, 'ERR', 'play', `再生失敗 ${fileName(wav)}: ${r.stderr.trim() || `exit ${r.exitCode}`}`)
     return false
@@ -338,7 +355,7 @@ async function silence($: EngineInterface, ctx: Ctx): Promise<string | null> {
   if ((await $.env.get('VOICE_NOTIFY_SUPPRESS')) === '1') return 'VOICE_NOTIFY_SUPPRESS'
   if (await isMuted($, ctx.root)) return '手動ミュート'
   if (ctx.os === 'windows' && ctx.cfg.mute?.whenMicInUse) {
-    const r = await $.process.run([...MIC_QUERY])
+    const r = await run($, [...MIC_QUERY])
     const app = r.exitCode === 0 ? micInUseFrom(r.stdout) : null
     if (app) return `マイク使用中 (${app})`
   }
@@ -593,7 +610,7 @@ async function findEngine($: EngineInterface, cfg: VoiceConfig, os: Os): Promise
 
 // Windows の start-engine.ps1 は起動を待って終了コードで答える。それ以外は切り離して起動し、ここで応答を待つ
 async function startEngine($: EngineInterface, cfg: VoiceConfig, os: Os, exe: string): Promise<boolean> {
-  const r = await $.process.run(startArgv(os, $.plugin.root, exe), { timeoutMs: 90_000 })
+  const r = await run($, startArgv(os, $.plugin.root, exe), { timeoutMs: 90_000 })
   if (os === 'windows') return r.exitCode === 0
   // 初回はモデル読み込みで十数秒かかる
   for (let i = 0; i < 60; i++) {
@@ -630,6 +647,20 @@ async function phraseState($: EngineInterface, ctx: Ctx): Promise<PhraseState> {
   return { total: jobs.length, missing, current, busy, progress: p && p.done < p.total ? { done: p.done, total: p.total } : null }
 }
 
+// force の前に消すもの：job のフォルダにある wav すべて。文言を減らしたあとの古い NN.wav が残ると、
+// 再生はフォルダの wav をすべて候補にするので、消したはずの文言が鳴り続ける
+async function phraseFolderWavs($: EngineInterface, jobs: readonly { path: string }[]): Promise<string[]> {
+  const out: string[] = []
+  for (const dir of new Set(jobs.map(j => j.path.slice(0, j.path.lastIndexOf('/'))))) {
+    try {
+      for (const f of await $.fs.list(dir)) if (f.kind === 'file' && f.name.endsWith('.wav')) out.push(`${dir}/${f.name}`)
+    } catch {
+      // まだ無い
+    }
+  }
+  return out
+}
+
 // 足りないもの（force ならすべて）を作る。作り終えたら、どの設定で作ったか（stamp）を残す
 async function generatePhrases($: EngineInterface, ctx: Ctx, force: boolean): Promise<void> {
   if (generating) return
@@ -637,7 +668,7 @@ async function generatePhrases($: EngineInterface, ctx: Ctx, force: boolean): Pr
   try {
     const jobs = phraseJobs(ctx.cfg, ctx.root)
     const stamp = `${ctx.root}/state/phrases-stamp`
-    if (force) await removeFiles($, ctx.os, [...jobs.map(j => j.path), stamp])
+    if (force) await removeFiles($, ctx.os, [...(await phraseFolderWavs($, jobs)), stamp])
     const speakers = ctx.cfg.speakers ?? {}
     let made = 0
     let kept = 0
@@ -725,8 +756,7 @@ async function install($: EngineInterface, ctx: Ctx, force: boolean): Promise<st
   const out = ['voice-notify を導入します', `ホーム: ${ctx.root}`, step('1. ホーム'), ok(`config.json: ${ctx.root}/config.json`)]
   const legacy = await legacyFiles($, ctx.root)
   if (legacy.length) {
-    await removeFiles($, ctx.os, legacy)
-    out.push(ok(`0.2.0 の残りを消しました（${legacy.length} 件）`))
+    out.push((await removeFiles($, ctx.os, legacy)) ? ok(`0.2.0 の残りを消しました（${legacy.length} 件）`) : warn(`0.2.0 の残りを消せないものがありました（${legacy.length} 件のうち）。${ctx.root}/state と bin を確かめてください`))
   }
   out.push(step('2. VOICEVOX'))
   const engine = await findEngine($, ctx.cfg, ctx.os)
@@ -759,7 +789,7 @@ async function install($: EngineInterface, ctx: Ctx, force: boolean): Promise<st
 // 報告だけ。何も変えない
 async function doctor($: EngineInterface, ctx: Ctx): Promise<string[]> {
   const port = enginePort(ctx.cfg)
-  const curl = await $.process.run([ctx.os === 'windows' ? 'curl.exe' : 'curl', '--version'])
+  const curl = await run($, [ctx.os === 'windows' ? 'curl.exe' : 'curl', '--version'])
   let errors: string[] = []
   try {
     errors = (await $.fs.read(`${ctx.root}/notify.log`)).trimEnd().split('\n').slice(-200).filter(l => / ERR {2}/.test(l))
@@ -787,7 +817,7 @@ async function doctor($: EngineInterface, ctx: Ctx): Promise<string[]> {
 
 // Windows のタスクとホットキーは install.ps1 が扱う（ScheduledTask・WScript.Shell は PowerShell からしか触れない）
 async function installScript($: EngineInterface, args: readonly string[]): Promise<string[]> {
-  const r = await $.process.run(installScriptArgv($.plugin.root, args), { timeoutMs: 60_000 })
+  const r = await run($, installScriptArgv($.plugin.root, args), { timeoutMs: 60_000 })
   return r.exitCode === 0 ? fromScript(r.stdout) : [ng(`install.ps1 が失敗: ${r.stderr.trim() || r.exitCode}`)]
 }
 
@@ -796,7 +826,7 @@ async function homeDir($: EngineInterface): Promise<string> {
 }
 
 async function guiDomain($: EngineInterface): Promise<string> {
-  return `gui/${(await $.process.run(['id', '-u'])).stdout.trim()}`
+  return `gui/${(await run($, ['id', '-u'])).stdout.trim()}`
 }
 
 async function installAutostartAndHotkey($: EngineInterface, ctx: Ctx, engine: FoundEngine): Promise<string[]> {
@@ -809,15 +839,15 @@ async function installAutostartAndHotkey($: EngineInterface, ctx: Ctx, engine: F
     const plist = plistPath(home)
     await $.fs.write(plist, fillTemplate(await $.fs.read(`${$.plugin.root}/scripts/macos/voice-notify-engine.plist`), values, xml))
     const domain = await guiDomain($)
-    await $.process.run(['launchctl', 'bootout', `${domain}/${LAUNCHD_LABEL}`]) // 前の登録が無ければ失敗するが、構わない
-    const r = await $.process.run(['launchctl', 'bootstrap', domain, plist])
+    await run($, ['launchctl', 'bootout', `${domain}/${LAUNCHD_LABEL}`]) // 前の登録が無ければ失敗するが、構わない
+    const r = await run($, ['launchctl', 'bootstrap', domain, plist])
     out.push(r.exitCode === 0 ? ok(`launchd: ${plist}`) : ng(`launchctl bootstrap が失敗: ${r.stderr.trim()}`))
   } else {
     const unit = unitPath(home)
     // unit の書式は XML ではないので、値はそのまま入れる
     await $.fs.write(unit, fillTemplate(await $.fs.read(`${$.plugin.root}/scripts/linux/voice-notify-engine.service`), values, s => s))
-    await $.process.run(['systemctl', '--user', 'daemon-reload'])
-    const r = await $.process.run(['systemctl', '--user', 'enable', '--now', SYSTEMD_UNIT])
+    await run($, ['systemctl', '--user', 'daemon-reload'])
+    const r = await run($, ['systemctl', '--user', 'enable', '--now', SYSTEMD_UNIT])
     out.push(r.exitCode === 0 ? ok(`systemd: ${unit}`) : ng(`systemctl --user enable が失敗: ${r.stderr.trim()}`))
   }
   out.push(ok(`ホットキーは Windows だけです。ミュートは ${HINT.voice} を使ってください`))
@@ -829,13 +859,13 @@ async function removeAutostartAndHotkey($: EngineInterface, root: string, os: Os
   if (os === 'windows') return [...out, ...(await installScript($, ['-Action', 'remove', '-VHome', root.replace(/\//g, '\\')]))]
   const home = await homeDir($)
   if (os === 'macos') {
-    await $.process.run(['launchctl', 'bootout', `${await guiDomain($)}/${LAUNCHD_LABEL}`])
+    await run($, ['launchctl', 'bootout', `${await guiDomain($)}/${LAUNCHD_LABEL}`])
     await removeFiles($, os, [plistPath(home)])
     out.push(ok('launchd の登録を外しました'))
   } else {
-    await $.process.run(['systemctl', '--user', 'disable', '--now', SYSTEMD_UNIT])
+    await run($, ['systemctl', '--user', 'disable', '--now', SYSTEMD_UNIT])
     await removeFiles($, os, [unitPath(home)])
-    await $.process.run(['systemctl', '--user', 'daemon-reload'])
+    await run($, ['systemctl', '--user', 'daemon-reload'])
     out.push(ok('systemd の登録を外しました'))
   }
   return out
@@ -849,7 +879,7 @@ async function autostartStatus($: EngineInterface, ctx: Ctx): Promise<string[]> 
     const plist = plistPath(home)
     out.push((await $.fs.exists(plist)) ? ok(`ログオン時起動（launchd）: ${plist}`) : warn('ログオン時起動（launchd）なし'))
   } else {
-    const r = await $.process.run(['systemctl', '--user', 'is-enabled', SYSTEMD_UNIT])
+    const r = await run($, ['systemctl', '--user', 'is-enabled', SYSTEMD_UNIT])
     out.push(r.exitCode === 0 ? ok(`ログオン時起動（systemd）: ${r.stdout.trim()}`) : warn('ログオン時起動（systemd）なし'))
   }
   return out

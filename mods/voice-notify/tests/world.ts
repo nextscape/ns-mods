@@ -20,6 +20,8 @@ export type WorldOptions = {
   // 既定の答えより先に見る。undefined を返せば既定に任せる
   run?: (argv: readonly string[]) => RunResult | undefined
   linuxPlayers?: string[]
+  // 起動できない（入っていない）コマンド。$.process.run が reject する
+  missing?: string[]
   now?: number
   // VOICE_NOTIFY_HOME と OS に足す環境変数
   env?: Record<string, string>
@@ -148,6 +150,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     const argv = [...e.argv]
     w.runs.push(argv)
     w.inputs.push(e.init?.stdin ?? '')
+    if (opts.missing?.includes(argv[0]!)) throw new Error(`spawn ${argv[0]} ENOENT`)
     const custom = opts.run?.(argv)
     if (custom) return ok(custom) as never
     // Windows では curl.exe / powershell.exe と書く。.exe を外して比べる
@@ -163,9 +166,13 @@ export function world(on: On, opts: WorldOptions = {}): World {
       put(argv[argv.indexOf('-o') + 1]!, 'RIFF-fake-wav')
       return ok() as never
     }
-    // rm -f -- <paths> / cmd /d /c del /f /q <paths>
-    if (cmd === 'rm' || (cmd === 'cmd' && argv[3] === 'del')) {
-      for (const a of argv.slice(cmd === 'rm' ? 3 : 6)) files.delete(key(a))
+    // rm -f -- <paths> / remove.ps1（パスは stdin で1行ずつ）
+    if (cmd === 'rm') {
+      for (const a of argv.slice(3)) files.delete(key(a))
+      return ok() as never
+    }
+    if (cmd === 'powershell' && argv.at(-1)!.endsWith('remove.ps1')) {
+      for (const a of (e.init?.stdin ?? '').split('\n')) if (a) files.delete(key(a))
       return ok() as never
     }
     // 再生（Windows は powershell、macOS は afplay、Linux は sh の再生スクリプト）。どれも argv の最後が wav

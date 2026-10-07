@@ -78,6 +78,18 @@ describe('voice-notify commands', () => {
     expect([...w.files.keys()].some(k => /state\/(turns|summaries)\/|plugin-root/.test(k))).toBe(false)
   })
 
+  test('setup force removes every wav in the phrase folders, stale ones too, before remaking', async ($, on) => {
+    // 文言を6件から2件に減らしたあとの force。03〜06.wav が残ると、消した文言が鳴り続ける
+    const stale: Record<string, string> = {}
+    for (const n of ['01', '02', '03', '04', '05', '06']) stale[`${ROOT}/phrases/metan/stop/done/${n}.wav`] = 'old'
+    const w = setup(on, { files: { ...stale, [`${ROOT}/phrases/metan/stop/done/.keep`]: '' } })
+    await run($, 'voice-notify', 'setup force')
+    await settle(w)
+    const left = [...w.files.keys()].filter(k => k.startsWith(`${ROOT}/phrases/metan/stop/done/`) && k.endsWith('.wav')).sort()
+    expect(left).toEqual([`${ROOT}/phrases/metan/stop/done/01.wav`, `${ROOT}/phrases/metan/stop/done/02.wav`])
+    expect(w.files.get(`${ROOT}/phrases/metan/stop/done/01.wav`)).toBe('RIFF-fake-wav')
+  })
+
   test('setup force remakes every phrase; a failed run leaves no stamp', async ($, on) => {
     const w = setup(on, { run: a => (a[0] === 'curl.exe' && a[1] === '-s' ? { exitCode: 22, stderr: 'HTTP 500' } : undefined) })
     await run($, 'voice-notify', 'setup force')
@@ -145,6 +157,19 @@ describe('voice-notify commands', () => {
     const w = setup(on, { os: 'linux', env: { HOME: '/home/u' } })
     expect(await run($, 'voice-notify', 'setup')).toMatch(/外部の ENGINE（Docker など）を使うので、ログオン時の起動は登録しません/)
     expect(w.runs.some(a => a[0] === 'systemctl')).toBe(false)
+  })
+
+  test('doctor reports a missing curl instead of failing', async ($, on) => {
+    setup(on, { missing: ['curl.exe'] })
+    expect(await run($, 'voice-notify', 'doctor')).toMatch(/NG   curl が見つからない/)
+  })
+
+  test('a Linux without systemd: setup and doctor say so instead of failing', async ($, on) => {
+    const exe = '/home/u/VOICEVOX/vv-engine/run'
+    setup(on, { os: 'linux', env: { HOME: '/home/u' }, files: { [exe]: 'x' }, missing: ['systemctl'] })
+    expect(await run($, 'voice-notify', 'setup')).toMatch(/NG   systemctl --user enable が失敗/)
+    expect(await run($, 'voice-notify', 'doctor')).toMatch(/注意 ログオン時起動（systemd）なし/)
+    expect(await run($, 'voice-notify', 'remove')).toMatch(/^voice-notify を撤去します/)
   })
 
   test('a broken config.json: setup says so, remove still runs', async ($, on) => {

@@ -48,7 +48,7 @@ describe('voicevox', () => {
   test('audioQueryUrl encodes the text; synthArgv reads the query from stdin and writes the wav', () => {
     expect(audioQueryUrl(P, 'テスト です')).toBe(`http://127.0.0.1:50021/audio_query?text=${encodeURIComponent('テスト です')}&speaker=2`)
     expect(synthArgv(P, `${ROOT}/cache/x.wav`)).toEqual([
-      'curl.exe', '-s', '-f', '--create-dirs', '-m', '120', '-H', 'Content-Type: application/json', '--data-binary', '@-',
+      'curl.exe', '-s', '-f', '-m', '120', '-H', 'Content-Type: application/json', '--data-binary', '@-',
       '-o', `${ROOT}/cache/x.wav`, 'http://127.0.0.1:50021/synthesis?speaker=2',
     ])
     expect(synthArgv({ ...P, os: 'linux' }, '/h/x.wav')[0]).toBe('curl')

@@ -20,10 +20,14 @@ describe('os', () => {
     expect(osFrom(undefined, 'FreeBSD')).toBe('linux')
   })
 
-  test('removeArgv uses del on Windows and rm elsewhere, keeping spaces in one argument', () => {
-    expect(removeArgv('windows', ['C:/vn/a.wav', 'C:/vn/b c.wav'])).toEqual(['cmd', '/d', '/c', 'del', '/f', '/q', 'C:\\vn\\a.wav', 'C:\\vn\\b c.wav'])
-    expect(removeArgv('linux', ['/h/x.wav'])).toEqual(['rm', '-f', '--', '/h/x.wav'])
-    expect(removeArgv('macos', [])).toBeNull()
+  test('removeArgv: Windows passes the paths on stdin to remove.ps1 (no cmd length limit, no & parsing); elsewhere rm', () => {
+    const many = Array.from({ length: 200 }, (_, i) => `C:/ホーム/A&B %X%/phrases/metan/stop/done/${i}.wav`)
+    expect(removeArgv('windows', 'C:/p', many)).toEqual({
+      argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\p\\scripts\\windows\\remove.ps1'],
+      stdin: many.map(p => p.replace(/\//g, '\\')).join('\n'),
+    })
+    expect(removeArgv('linux', '/p', ['/h/x.wav', '/h/a b.wav'])).toEqual({ argv: ['rm', '-f', '--', '/h/x.wav', '/h/a b.wav'], stdin: '' })
+    expect(removeArgv('macos', '/p', [])).toBeNull()
   })
 
   test('micInUseFrom: an app with a start and no stop is using the microphone', () => {

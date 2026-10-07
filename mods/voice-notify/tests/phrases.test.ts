@@ -13,9 +13,14 @@ describe('phrases', () => {
       ['stop/brief/done/01.wav', '終わりました。'],
       ['mute/01.wav', '停止します。'],
       ['unmute/01.wav', '再開します。'],
-      ['agent/_default.wav', 'エージェントが完了しました。'],
+      ['agent/_default/01.wav', 'エージェントが完了しました。'],
     ])
     expect(phraseJobs(PHRASE_CFG, ROOT).filter(j => j.speaker === 'zundamon')).toHaveLength(7)
+  })
+
+  test('every phrase is a NN.wav inside the folder the player looks in', () => {
+    // 再生は phrases/<speaker>/<name>/ のフォルダから選ぶ（register.ts の pickPhrase）
+    for (const j of phraseJobs(PHRASE_CFG, ROOT)) expect(j.path).toMatch(/\/phrases\/[^/]+\/.+\/\d{2}\.wav$/)
   })
 
   test('jobsStamp changes with the text, the voice, the readings and the lead silence', () => {

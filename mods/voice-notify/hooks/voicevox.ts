@@ -73,10 +73,11 @@ export function audioQueryUrl(p: SynthParams, text: string): string {
   return `${base(p.port)}/audio_query?text=${encodeURIComponent(text)}&speaker=${p.speakerId}`
 }
 
-// クエリは stdin で渡す（一時ファイルを作って消す手間をかけない）
+// クエリは stdin で渡す（一時ファイルを作って消す手間をかけない）。
+// --create-dirs は使わない：Windows 標準の curl は非 ASCII のフォルダを作れない（exit 23）ので、フォルダは呼ぶ側が先に作る
 export function synthArgv(p: SynthParams, out: string): string[] {
   return [
-    p.os === 'windows' ? 'curl.exe' : 'curl', '-s', '-f', '--create-dirs', '-m', '120', '-H', 'Content-Type: application/json',
+    p.os === 'windows' ? 'curl.exe' : 'curl', '-s', '-f', '-m', '120', '-H', 'Content-Type: application/json',
     '--data-binary', '@-', '-o', out, `${base(p.port)}/synthesis?speaker=${p.speakerId}`,
   ]
 }
