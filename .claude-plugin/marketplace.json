@@ -13,6 +13,11 @@
       "description": "プロンプトごとに effort（low / medium / high / xhigh）を自動で選ぶ（Opus / Sonnet 5.5 以降、Fable / Mythos 5.1 以降）"
     },
     {
+      "name": "quality-router",
+      "source": "./mods/quality-router",
+      "description": "品質を外さないための振り分け。本体の effort（medium〜max）、サブエージェントのモデルと effort、Workflow の agent() の点検、判定の記録（本体モデルの守りは任意）"
+    },
+    {
       "name": "voice-notify",
       "source": "./mods/voice-notify",
       "description": "VOICEVOX による音声通知と Haiku 要約（Windows）"

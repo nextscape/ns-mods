@@ -1,0 +1,9 @@
+{
+  "name": "quality-router",
+  "version": "0.3.1",
+  "description": "Quality-first routing: picks main-loop effort (medium to max) per request, assigns model and effort to subagents by kind and weight, checks Workflow agent() staffing, records judgments locally; the top-model guard is opt-in",
+  "author": { "name": "Nextscape Inc." },
+  "license": "MIT",
+  "repository": "https://github.com/nextscape/ns-mods",
+  "types": "./types/index.d.ts"
+}
