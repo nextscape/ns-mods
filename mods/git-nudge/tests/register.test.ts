@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { RESOLVED } from '../hooks/judge'
 import { FIXTURES } from './fixtures'
 
 const NOW = Date.UTC(2026, 9, 7, 12)
@@ -405,5 +406,55 @@ describe('the band and pulling', () => {
     const ui = await band($)
     expect(await ui.find({ type: 'Text', text: 'upstream が消えたブランチ 5 本 → /git-nudge tidy' })).toBeUndefined()
     await ui.unmount()
+  })
+})
+
+const WARNING = 'これは情報です。ユーザーの指示なしに pull・rebase・push・ブランチの削除をしないでください。'
+
+describe('telling Claude', () => {
+  test('Claude hears of the state once, not again until it changes', async ($, on) => {
+    const { seen, clock } = world(on, { 'status --porcelain=v2': BEHIND })
+    await begin($, clock)
+    await $.prompt.submit({ text: 'a' })
+    await $.prompt.submit({ text: 'b' })
+    expect(seen.context[0]).toEqual([`[git-nudge] このリポジトリの状態: origin/main より 2 遅れ\n${WARNING}`])
+    expect(seen.context[1]).toBeUndefined()
+  })
+
+  test('once it clears up, Claude hears so once', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': [...BEHIND, { out: FIXTURES['status-insync'] }],
+    })
+    await begin($, clock)
+    await $.prompt.submit({ text: 'a' })
+    await turn($, clock)
+    await $.prompt.submit({ text: 'b' })
+    await $.prompt.submit({ text: 'c' })
+    expect(seen.context[1]).toEqual([RESOLVED])
+    expect(seen.context[2]).toBeUndefined()
+  })
+
+  test('all in sync adds nothing', async ($, on) => {
+    const { seen, clock } = world(on)
+    await begin($, clock)
+    await $.prompt.submit({ text: 'a' })
+    expect(seen.context[0]).toBeUndefined()
+  })
+
+  test('tellClaude false tells nothing', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'config --get-regexp': { out: 'git-nudge.tellclaude false\n' },
+    })
+    await begin($, clock)
+    await $.prompt.submit({ text: 'a' })
+    expect(seen.context[0]).toBeUndefined()
+  })
+
+  test('commits left unpushed before the session are told', async ($, on) => {
+    const { seen, clock } = world(on, { 'status --porcelain=v2': { out: FIXTURES['status-ahead'] } })
+    await begin($, clock)
+    await $.prompt.submit({ text: 'a' })
+    expect(seen.context[0]).toEqual([`[git-nudge] このリポジトリの状態: 前回からの未 push 1 件\n${WARNING}`])
   })
 })
