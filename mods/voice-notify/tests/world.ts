@@ -166,6 +166,12 @@ export function world(on: On, opts: WorldOptions = {}): World {
     return { value: { status: 200, ok: true, headers: {}, text } } as never
   })
   on('agent.list', async () => ({ value: w.agents }) as never)
+  // エンジンの役（プラグインの hook が next(e) で呼ぶ先）
+  on('turn.start', async ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', async ($, e) => ({ text: e.answer }))
+  on('classic.PermissionRequest', async () => ({}) as never)
+  on('classic.Notification', async () => ({}) as never)
+  on('classic.TaskCompleted', async () => ({}) as never)
   on('model.complete', async ($, e) => {
     w.asks.push(e as unknown as Record<string, unknown>)
     return { value: { ...(opts.reply ?? { isAnswered: true, text: '要約しました。' }), usage: { input_tokens: 0, output_tokens: 0 } } } as never
