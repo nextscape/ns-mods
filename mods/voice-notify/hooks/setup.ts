@@ -62,6 +62,7 @@ export const HINT = {
   doctor: `${CMD} doctor`,
   remove: `${CMD} remove`,
   unmute: `${CMD} on`,
+  voice: `${CMD} [on|off|status]`,
 }
 
 export function voiceStatus(cfg: VoiceConfig, os: Os, muted: boolean): string {

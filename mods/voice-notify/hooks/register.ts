@@ -21,7 +21,8 @@ import type { Os } from './os'
 import { jobsStamp, phraseBusy, phraseJobs } from './phrases'
 import type { PhraseState } from './phrases'
 import { LINUX_PLAYERS, playArgv, probeArgv } from './player'
-import { HINT, INSTALL_HINT, LEGACY_BIN, LEGACY_STATE_DIRS, doctorReport, ng, ok, parseCommand, step, unknownArg, voiceStatus } from './setup'
+import { LAUNCHD_LABEL, SYSTEMD_UNIT, fillTemplate, fromScript, installScriptArgv, plistPath, unitPath, windowsInstallArgs, xml } from './autostart'
+import { HINT, INSTALL_HINT, LEGACY_BIN, LEGACY_STATE_DIRS, doctorReport, ng, ok, parseCommand, step, unknownArg, voiceStatus, warn } from './setup'
 import type { SetupAction, VoiceAction } from './setup'
 import { appendLog, logLine, phraseMemo } from './store'
 import type { Level } from './store'
@@ -79,7 +80,7 @@ export const register: Register = on => {
       argumentHint: '[on|off|status|setup|doctor|remove]',
     })
     // 前回の生成が途中で終わっていたら続きを作る
-    void resumePhrases($)
+    background(resumePhrases($))
     return r
   })
 
@@ -104,26 +105,31 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     working.delete(e.turnId)
     if (compacting === 0 && !e.isAborted) {
-      if (e.agentId) void onAgentTurn($, e)
-      else void onMainTurn($, e)
+      background(e.agentId ? onAgentTurn($, e) : onMainTurn($, e))
     }
     return next(e)
   })
 
   on('classic.PermissionRequest', async ($, e, next) => {
-    void onPermission($, e.tool_name)
+    background(onPermission($, e.tool_name))
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('classic.Notification', async ($, e, next) => {
-    void onNotice($, e.notification_type, working.size > 0)
+    background(onNotice($, e.notification_type, working.size > 0))
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('classic.TaskCompleted', async ($, e, next) => {
-    void onTask($)
+    background(onTask($))
     return next(e)
   }).catch(($, e, next) => next(e))
+}
+
+// 裏で流す処理（hook は待たない）。失敗は中でログに残すので、ここで受け止めるのは
+// モジュールが外れた後（セッションの終了・再読み込み）など、書き残す先も無いときだけ
+function background(work: Promise<unknown>): void {
+  work.catch(() => {})
 }
 
 // ================================================================ 前提（ホーム・設定・OS）
@@ -192,8 +198,13 @@ async function removeFiles($: EngineInterface, os: Os, paths: readonly string[])
   if (argv) await $.process.run(argv)
 }
 
+// 書けなくても例外は出さない（ログのために読み上げを止めない）
 async function writeLog($: EngineInterface, root: string, level: Level, event: string, msg: string): Promise<void> {
-  pendingLog.push({ root, line: logLine(new Date(await $.clock.now()), level, event, msg) })
+  try {
+    pendingLog.push({ root, line: logLine(new Date(await $.clock.now()), level, event, msg) })
+  } catch {
+    return
+  }
   const release = await logGate.enter()
   try {
     // 先に通った呼び出しが、この行もまとめて書いていれば何もしない
@@ -209,7 +220,11 @@ async function writeLog($: EngineInterface, root: string, level: Level, event: s
       await $.fs.write(path, appendLog(old, batch.filter(b => b.root === r).map(b => b.line)))
     }
   } catch (err) {
-    $.ui.log(`voice-notify: notify.log に書けない (${String(err)})`, { to: 'debug' })
+    try {
+      $.ui.log(`voice-notify: notify.log に書けない (${String(err)})`, { to: 'debug' })
+    } catch {
+      // モジュールが外れた後は、知らせる先も無い
+    }
   } finally {
     release()
   }
@@ -733,7 +748,7 @@ async function install($: EngineInterface, ctx: Ctx, force: boolean): Promise<st
   if (!force && st.current && st.missing === 0) out.push(ok(`生成済み（作り直すときは ${HINT.force}）`))
   else if (st.busy) out.push(ok(`別のセッションが生成中です（${st.progress?.done ?? 0}/${st.total}）`))
   else {
-    void generatePhrases($, ctx, force)
+    background(generatePhrases($, ctx, force))
     out.push(ok(`裏で生成を始めました（初回は数分）。進み具合は ${HINT.doctor} の「定型フレーズ」で確認できます`))
   }
   out.push(...(await installAutostartAndHotkey($, ctx, engine)))
@@ -768,16 +783,74 @@ async function doctor($: EngineInterface, ctx: Ctx): Promise<string[]> {
   })
 }
 
-// ================================================================ ログオン時の ENGINE 起動とホットキー（Task 10 で入れる）
+// ================================================================ ログオン時の ENGINE 起動とホットキー
 
-async function installAutostartAndHotkey(_$: EngineInterface, _ctx: Ctx, _engine: FoundEngine): Promise<string[]> {
-  return []
+// Windows のタスクとホットキーは install.ps1 が扱う（ScheduledTask・WScript.Shell は PowerShell からしか触れない）
+async function installScript($: EngineInterface, args: readonly string[]): Promise<string[]> {
+  const r = await $.process.run(installScriptArgv($.plugin.root, args), { timeoutMs: 60_000 })
+  return r.exitCode === 0 ? fromScript(r.stdout) : [ng(`install.ps1 が失敗: ${r.stderr.trim() || r.exitCode}`)]
 }
 
-async function removeAutostartAndHotkey(_$: EngineInterface, _root: string, _os: Os): Promise<string[]> {
-  return ['voice-notify を撤去します（ホームは残します）']
+async function homeDir($: EngineInterface): Promise<string> {
+  return ((await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
 }
 
-async function autostartStatus(_$: EngineInterface, _ctx: Ctx): Promise<string[]> {
-  return []
+async function guiDomain($: EngineInterface): Promise<string> {
+  return `gui/${(await $.process.run(['id', '-u'])).stdout.trim()}`
+}
+
+async function installAutostartAndHotkey($: EngineInterface, ctx: Ctx, engine: FoundEngine): Promise<string[]> {
+  const out = [step('5. ログオン時の ENGINE 起動とホットキー')]
+  if (ctx.os === 'windows') return [...out, ...(await installScript($, windowsInstallArgs(ctx.root, ctx.cfg.hotKey ?? 'CTRL+ALT+M', engine.path)))]
+  if (!engine.path) return [...out, ok('外部の ENGINE（Docker など）を使うので、ログオン時の起動は登録しません')]
+  const home = await homeDir($)
+  const values = { LABEL: LAUNCHD_LABEL, RUN: engine.path, DIR: engine.path.slice(0, engine.path.lastIndexOf('/')) }
+  if (ctx.os === 'macos') {
+    const plist = plistPath(home)
+    await $.fs.write(plist, fillTemplate(await $.fs.read(`${$.plugin.root}/scripts/macos/voice-notify-engine.plist`), values, xml))
+    const domain = await guiDomain($)
+    await $.process.run(['launchctl', 'bootout', `${domain}/${LAUNCHD_LABEL}`]) // 前の登録が無ければ失敗するが、構わない
+    const r = await $.process.run(['launchctl', 'bootstrap', domain, plist])
+    out.push(r.exitCode === 0 ? ok(`launchd: ${plist}`) : ng(`launchctl bootstrap が失敗: ${r.stderr.trim()}`))
+  } else {
+    const unit = unitPath(home)
+    // unit の書式は XML ではないので、値はそのまま入れる
+    await $.fs.write(unit, fillTemplate(await $.fs.read(`${$.plugin.root}/scripts/linux/voice-notify-engine.service`), values, s => s))
+    await $.process.run(['systemctl', '--user', 'daemon-reload'])
+    const r = await $.process.run(['systemctl', '--user', 'enable', '--now', SYSTEMD_UNIT])
+    out.push(r.exitCode === 0 ? ok(`systemd: ${unit}`) : ng(`systemctl --user enable が失敗: ${r.stderr.trim()}`))
+  }
+  out.push(ok(`ホットキーは Windows だけです。ミュートは ${HINT.voice} を使ってください`))
+  return out
+}
+
+async function removeAutostartAndHotkey($: EngineInterface, root: string, os: Os): Promise<string[]> {
+  const out = ['voice-notify を撤去します（ホームは残します）']
+  if (os === 'windows') return [...out, ...(await installScript($, ['-Action', 'remove', '-VHome', root.replace(/\//g, '\\')]))]
+  const home = await homeDir($)
+  if (os === 'macos') {
+    await $.process.run(['launchctl', 'bootout', `${await guiDomain($)}/${LAUNCHD_LABEL}`])
+    await removeFiles($, os, [plistPath(home)])
+    out.push(ok('launchd の登録を外しました'))
+  } else {
+    await $.process.run(['systemctl', '--user', 'disable', '--now', SYSTEMD_UNIT])
+    await removeFiles($, os, [unitPath(home)])
+    await $.process.run(['systemctl', '--user', 'daemon-reload'])
+    out.push(ok('systemd の登録を外しました'))
+  }
+  return out
+}
+
+async function autostartStatus($: EngineInterface, ctx: Ctx): Promise<string[]> {
+  const out = [step('常駐まわり')]
+  if (ctx.os === 'windows') return [...out, ...(await installScript($, ['-Action', 'status', '-VHome', ctx.root.replace(/\//g, '\\')]))]
+  const home = await homeDir($)
+  if (ctx.os === 'macos') {
+    const plist = plistPath(home)
+    out.push((await $.fs.exists(plist)) ? ok(`ログオン時起動（launchd）: ${plist}`) : warn('ログオン時起動（launchd）なし'))
+  } else {
+    const r = await $.process.run(['systemctl', '--user', 'is-enabled', SYSTEMD_UNIT])
+    out.push(r.exitCode === 0 ? ok(`ログオン時起動（systemd）: ${r.stdout.trim()}`) : warn('ログオン時起動（systemd）なし'))
+  }
+  return out
 }

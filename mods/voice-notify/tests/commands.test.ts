@@ -99,6 +99,54 @@ describe('voice-notify commands', () => {
     expect(synths(w)).toHaveLength(0)
   })
 
+  test('Windows: setup hands install.ps1 the engine it found; an engine that only answers gets no task', async ($, on) => {
+    const w = setup(on, {
+      env: { ProgramFiles: 'C:/P' },
+      files: { 'C:/P/VOICEVOX/vv-engine/run.exe': 'x' },
+      run: a => (a.includes('install') ? { stdout: 'OK スケジュールタスク\nOK ホットキー CTRL+ALT+M\n' } : undefined),
+    })
+    const out = await run($, 'voice-notify', 'setup')
+    const ps = w.runs.find(a => a.includes('install'))!
+    expect(ps.slice(7)).toEqual(['-Action', 'install', '-VHome', 'C:\\vn', '-HotKey', 'CTRL+ALT+M', '-EnginePath', 'C:\\P\\VOICEVOX\\vv-engine\\run.exe'])
+    expect(out).toMatch(/   OK   スケジュールタスク\n   OK   ホットキー CTRL\+ALT\+M/)
+    w.files.delete('C:/P/VOICEVOX/vv-engine/run.exe')
+    await run($, 'voice-notify', 'setup')
+    expect(w.runs.filter(a => a.includes('install')).at(-1)).not.toContain('-EnginePath')
+  })
+
+  test('macOS: setup writes the plist and bootstraps it; remove boots it out', async ($, on) => {
+    const app = '/Applications/VOICEVOX.app/Contents/Resources/vv-engine/run'
+    const w = setup(on, { os: 'macos', env: { HOME: '/Users/u' }, files: { [app]: 'x' }, run: a => (a[0] === 'id' ? { stdout: '501\n' } : undefined) })
+    const out = await run($, 'voice-notify', 'setup')
+    const plist = '/Users/u/Library/LaunchAgents/jp.nextscape.voice-notify.engine.plist'
+    expect(w.files.get(plist)).toBe(`<string>jp.nextscape.voice-notify.engine</string><string>${app}</string><string>/Applications/VOICEVOX.app/Contents/Resources/vv-engine</string>`)
+    expect(w.runs).toContainEqual(['launchctl', 'bootstrap', 'gui/501', plist])
+    expect(out).toMatch(/OK   launchd: /)
+    expect(out).toMatch(/ホットキーは Windows だけです/)
+    await run($, 'voice-notify', 'remove')
+    expect(w.runs).toContainEqual(['launchctl', 'bootout', 'gui/501/jp.nextscape.voice-notify.engine'])
+    expect(w.files.has(plist)).toBe(false)
+  })
+
+  test('Linux: setup writes the unit and enables it; doctor reads it; remove disables and deletes it', async ($, on) => {
+    const exe = '/home/u/VOICEVOX/vv-engine/run'
+    const w = setup(on, { os: 'linux', env: { HOME: '/home/u' }, files: { [exe]: 'x' }, run: a => (a[2] === 'is-enabled' ? { stdout: 'enabled\n' } : undefined) })
+    await run($, 'voice-notify', 'setup')
+    const unit = '/home/u/.config/systemd/user/voice-notify-engine.service'
+    expect(w.files.get(unit)).toBe(`WorkingDirectory=/home/u/VOICEVOX/vv-engine\nExecStart="${exe}"\n`)
+    expect(w.runs).toContainEqual(['systemctl', '--user', 'enable', '--now', 'voice-notify-engine.service'])
+    expect(await run($, 'voice-notify', 'doctor')).toMatch(/OK   ログオン時起動（systemd）: enabled/)
+    await run($, 'voice-notify', 'remove')
+    expect(w.runs).toContainEqual(['systemctl', '--user', 'disable', '--now', 'voice-notify-engine.service'])
+    expect(w.files.has(unit)).toBe(false)
+  })
+
+  test('an engine that only answers (Docker) registers nothing on Linux', async ($, on) => {
+    const w = setup(on, { os: 'linux', env: { HOME: '/home/u' } })
+    expect(await run($, 'voice-notify', 'setup')).toMatch(/外部の ENGINE（Docker など）を使うので、ログオン時の起動は登録しません/)
+    expect(w.runs.some(a => a[0] === 'systemctl')).toBe(false)
+  })
+
   test('a broken config.json: setup says so, remove still runs', async ($, on) => {
     setup(on, { config: '{"speaker":' })
     expect(await run($, 'voice-notify', 'setup')).toMatch(/NG   config\.json を読めません/)

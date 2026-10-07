@@ -40,8 +40,9 @@ export type World = {
   clock: ReturnType<typeof mock.clock>
 }
 
-// エンジンは fs のパスを Windows の区切り（\）にして渡すことがあるので、比べる前に / にそろえる
-export const key = (p: string) => p.replace(/\\/g, '/')
+// エンジンは fs のパスを Windows の区切り（\）にして渡すことがあるので、比べる前に / にそろえる。
+// また Windows でテストを動かすと、macOS・Linux の絶対パス（/Users/…・/home/… など）にドライブ名が付いて届くので外す
+export const key = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/(Users|home|Applications|opt)\/)/, '')
 
 export const AUDIO_QUERY = { accent_phrases: [], speedScale: 1, pitchScale: 0, intonationScale: 1, prePhonemeLength: 0.1, postPhonemeLength: 0.1 }
 
@@ -69,6 +70,13 @@ export const DEFAULT_CONFIG = {
   cacheMaxFiles: 200,
   playback: { leadSilenceMs: 600 },
   notification: { toolLabels: { Bash: 'コマンド実行' } },
+}
+
+// プラグインに同梱のファイル（$.plugin.root の下）。パスの末尾で答える
+const SHIPPED: Record<string, string> = {
+  '/config.default.json': JSON.stringify(DEFAULT_CONFIG),
+  '/scripts/macos/voice-notify-engine.plist': '<string>{{LABEL}}</string><string>{{RUN}}</string><string>{{DIR}}</string>',
+  '/scripts/linux/voice-notify-engine.service': 'WorkingDirectory={{DIR}}\nExecStart="{{RUN}}"\n',
 }
 
 // フレーズの少ない設定（2話者 × 7件 = 14件）
@@ -105,7 +113,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
   on('ui.log', async () => ({ value: undefined }))
   on('fs.read', async ($, e) => {
     const p = key(e.path)
-    const t = files.get(p) ?? (p.endsWith('/config.default.json') ? JSON.stringify(DEFAULT_CONFIG) : undefined)
+    const t = files.get(p) ?? Object.entries(SHIPPED).find(([suffix]) => p.endsWith(suffix))?.[1]
     if (t === undefined) throw new Error(`ENOENT ${e.path}`)
     return { value: t } as never
   })
