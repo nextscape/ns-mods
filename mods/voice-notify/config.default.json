@@ -86,9 +86,6 @@
       "タスクが完了しました。",
       "タスクが一件終わりました。"
     ],
-    "subagent": [
-      "エージェントが完了しました。"
-    ],
     "permission": [
       "許可をお願いします。",
       "確認をお願いします。"
@@ -106,13 +103,9 @@
       "音声通知を再開します。"
     ]
   },
-  "debugPayload": false,
   "subagent": {
     "debounceSeconds": 8,
-    "defaultLabel": "エージェント",
-    "labels": {},
-    "maxRemainSpoken": 9,
-    "remainWording": "inflight"
+    "defaultLabel": "エージェント"
   },
   "speech": {
     "shortSentenceChars": 20,

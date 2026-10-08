@@ -1,16 +1,1 @@
-{
-  "modules": ["./register.ts"],
-  "hooks": {
-    "UserPromptSubmit": [ { "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 10,  "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event promptsubmit" } ] } ],
-    "Stop":             [ { "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 120, "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event stop" } ] } ],
-    "StopFailure":      [ { "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 60,  "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event failure" } ] } ],
-    "Notification": [
-      { "matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input", "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 60, "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event permission" } ] },
-      { "matcher": "idle_prompt", "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 60, "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event idle" } ] },
-      { "matcher": "quota_auto_resume_fired|quota_auto_resume_stale|quota_auto_resume_disabled", "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 60, "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event notification" } ] }
-    ],
-    "TaskCompleted":    [ { "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 60,  "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event task" } ] } ],
-    "SubagentStart":    [ { "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 30,  "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event agentstart" } ] } ],
-    "SubagentStop":     [ { "hooks": [ { "type": "command", "shell": "powershell", "async": true, "timeout": 60,  "command": "& \"${CLAUDE_PLUGIN_ROOT}/scripts/notify.ps1\" -Event agentstop" } ] } ]
-  }
-}
+{ "modules": ["./register.ts"] }
