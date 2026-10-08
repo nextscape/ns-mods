@@ -110,7 +110,7 @@ describe('route', () => {
     ])
   })
 
-  test('routed: Opus and Sonnet from 5.5, Fable and Mythos from 5.1; a task notice is not a request', () => {
+  test('routed: Opus, Sonnet and Haiku from 5.5, Fable and Mythos from 5.1; a task notice is not a request', () => {
     const routed = [
       'claude-opus-5-5',
       'claude-opus-5-5[1m]',
@@ -118,6 +118,8 @@ describe('route', () => {
       'claude-opus-6',
       'claude-opus-6-1',
       'claude-sonnet-5-5',
+      'claude-haiku-5-5',
+      'claude-haiku-6',
       'claude-fable-5-1',
       'claude-mythos-5-1',
       'claude-fable-6',
@@ -129,6 +131,8 @@ describe('route', () => {
       'claude-sonnet-4-5-20250929',
       'claude-fable-5',
       'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
+      'claude-haiku-5',
       'gpt-6',
     ]
     expect(routed.filter(model => !isRouted(model))).toEqual([])

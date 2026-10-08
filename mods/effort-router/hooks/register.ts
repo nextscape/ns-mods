@@ -32,7 +32,7 @@ import type { Asked, Decision, Route } from './route'
 // answer is judged mid-turn the same way. A turn that runs long or hits
 // errors goes up one level, so a judgment that was too low corrects itself.
 // A background task's notice keeps the level before it. Only the routed
-// models (isRouted: Opus and Sonnet 5.5+, Fable and Mythos 5.1+) are touched;
+// models (isRouted: Opus, Sonnet and Haiku 5.5+, Fable and Mythos 5.1+) are touched;
 // on them Claude Code keeps the prompt cache across effort changes. The model
 // is never changed. A typed /effort runs as set for one turn; to pin a level,
 // turn routing off and use /effort.

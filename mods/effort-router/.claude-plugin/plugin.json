@@ -1,7 +1,7 @@
 {
   "name": "effort-router",
-  "version": "0.9.1",
-  "description": "Picks low/medium/high/xhigh effort per prompt for Opus/Sonnet 5.5+ and Fable/Mythos 5.1+ by how uncertain and costly the work is, raising it mid-turn when a turn runs long; a typed /effort applies at once",
+  "version": "0.10.0",
+  "description": "Picks low/medium/high/xhigh effort per prompt for Opus/Sonnet/Haiku 5.5+ and Fable/Mythos 5.1+ by how uncertain and costly the work is, raising it mid-turn when a turn runs long; a typed /effort applies at once",
   "author": {
     "name": "Nextscape Inc."
   },

@@ -56,13 +56,13 @@ export function asLevel(effort: string | number | undefined): Level | null {
   return null
 }
 
-// Routed: Opus and Sonnet from 5.5 on, Fable and Mythos from 5.1 on, the
+// Routed: Opus, Sonnet and Haiku from 5.5 on, Fable and Mythos from 5.1 on, the
 // models that keep the prompt cache across effort changes. A later version
 // (Opus 6, Sonnet 5.6) is routed too. The rubric is tuned for Opus 5.5.
-const ROUTED_FROM: Readonly<Record<string, number>> = { opus: 5.5, sonnet: 5.5, fable: 5.1, mythos: 5.1 }
+const ROUTED_FROM: Readonly<Record<string, number>> = { opus: 5.5, sonnet: 5.5, haiku: 5.5, fable: 5.1, mythos: 5.1 }
 
 export function isRouted(model: string): boolean {
-  const found = /claude-(opus|sonnet|fable|mythos)-(\d+)(?:-(\d{1,2})(?!\d))?/.exec(model)
+  const found = /claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2})(?!\d))?/.exec(model)
   if (!found) return false
   const version = Number(found[2]) + Number(found[3] ?? 0) / 10
   return version >= ROUTED_FROM[found[1]!]!

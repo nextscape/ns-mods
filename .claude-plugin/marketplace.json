@@ -10,7 +10,7 @@
     {
       "name": "effort-router",
       "source": "./mods/effort-router",
-      "description": "プロンプトごとに effort（low / medium / high / xhigh）を自動で選ぶ（Opus / Sonnet 5.5 以降、Fable / Mythos 5.1 以降）"
+      "description": "プロンプトごとに effort（low / medium / high / xhigh）を自動で選ぶ（Opus / Sonnet / Haiku 5.5 以降、Fable / Mythos 5.1 以降）"
     },
     {
       "name": "quality-router",

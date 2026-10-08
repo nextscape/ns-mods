@@ -3,7 +3,7 @@
 > **English summary**: effort-router is a Claude Code mod that picks the main thread's effort
 > (low / medium / high / xhigh) for each prompt, judged by Claude Haiku from how uncertain and costly the work is,
 > and raises it one level mid-turn when a turn runs long. It never changes the model. It applies only to
-> Claude Opus / Sonnet 5.5+ and Fable / Mythos 5.1+. Each judgment is one Haiku call on your plan or API key
+> Claude Opus / Sonnet / Haiku 5.5+ and Fable / Mythos 5.1+. Each judgment is one Haiku call on your plan or API key
 > (about 1 second before the turn starts). Install: `/plugin install effort-router --marketplace nextscape/ns-mods`.
 
 Claude Code の mod（関数フックで書くプラグイン）です。プロンプトごとに、メインスレッドの effort（推論の深さ）を **low / medium / high / xhigh** から選びます。簡単な依頼は速く安く、難しい依頼は深く考えて進めるのが目的です。
@@ -11,7 +11,7 @@ Claude Code の mod（関数フックで書くプラグイン）です。プロ�
 - 判定は Claude Haiku が行います。軸は作業の量ではなく、**正しい答えがどれだけ不確かか、見落としたときの損がどれだけ大きいか**です（[判定基準](#判定基準)）。
 - 判定が低すぎたときは、ターンの途中で1段上げて補います（往復が10回を超えたとき、またはツールのエラーが2回出たとき）。
 - **モデルは変えません。** モデルの振り分けは、サブエージェントの定義（`~/.claude/agents/`）に任せます。
-- 対象は **Claude Opus / Sonnet 5.5 以降と Fable / Mythos 5.1 以降**です。それ以外のモデル、サブエージェントのリクエストには何もしません。
+- 対象は **Claude Opus / Sonnet / Haiku 5.5 以降と Fable / Mythos 5.1 以降**です。それ以外のモデル、サブエージェントのリクエストには何もしません。
 
 導入する前に、[費用・待ち時間・送るデータ](#費用待ち時間送るデータ)を確認してください。判定のたびに Haiku を1回呼びます。
 
@@ -28,7 +28,7 @@ Claude Code（ターミナル）で次を実行します。
 | 項目 | 内容 |
 |---|---|
 | Claude Code | 2.1.287 以降（mod が既定で有効になる版）。2.1.291 で動作を確認 |
-| モデル | メインのモデルが Opus / Sonnet 5.5 以降、または Fable / Mythos 5.1 以降。ほかのモデルでは effort を書き換えず、判定もしません |
+| モデル | メインのモデルが Opus / Sonnet / Haiku 5.5 以降、または Fable / Mythos 5.1 以降。ほかのモデルでは effort を書き換えず、判定もしません |
 | OS | 問いません |
 
 ## 使い方
@@ -104,7 +104,7 @@ max は選びません。基準は Opus 5.5 に合わせて作り、対象のほ
 - 上の段階ほど、品質の伸びは小さく、費用は増えます。そのため既定を medium 寄りにし、上げるのは不確かさか損の大きさがはっきりしている作業に限っています。
 - 「effort を上げると抜け漏れが減る」ことを直接測ったデータは見つかりませんでした。xhigh の「広さ」の項目（全体レビュー、洗い出し）は、実測のない仮説です。
 
-対象を Opus / Sonnet 5.5 以降と Fable / Mythos 5.1 以降に絞っているのは、公式ドキュメントで「effort を変えてもプロンプトキャッシュが保たれる」とされているモデルだからです。それ以外のモデルでは、切り替えのたびにキャッシュが作り直されて費用が増えます。
+対象を Opus / Sonnet / Haiku 5.5 以降と Fable / Mythos 5.1 以降に絞っているのは、公式ドキュメントで「effort を変えてもプロンプトキャッシュが保たれる」とされているモデルだからです。それ以外のモデルでは、切り替えのたびにキャッシュが作り直されて費用が増えます。
 
 ## 仕組み
 
