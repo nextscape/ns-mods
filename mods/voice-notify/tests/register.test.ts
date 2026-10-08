@@ -240,11 +240,28 @@ describe('voice-notify', () => {
     expect(spoke(w).filter(p => p.startsWith('cache/'))).toHaveLength(2)
   })
 
-  test('the playing order holds when a report and a turn end together', async ($, on) => {
-    const w = setup(on, { agents: [{ id: 'a1', description: '調査', type: 'Explore', status: 'completed' }] })
-    await Promise.all([turn($, { durationMs: 10_000 }), turn($, { agentId: 'a1' })])
+  test('clips never overlap when a turn, a report and a permission request arrive together', async ($, on) => {
+    const w = setup(on, { playMs: 30, agents: [{ id: 'a1', description: '調査', type: 'Explore', status: 'completed' }] })
+    await Promise.all([
+      turn($),
+      turn($, { agentId: 'a1' }),
+      $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: {} } as never),
+    ])
+    for (let i = 0; i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await settle(w)
+    }
+    // メインの前置きと本文、報告、許可待ちの前置きと本文
+    expect(w.played).toHaveLength(5)
+    expect(w.maxPlaying).toBe(1)
+  })
+
+  test('an engine that answers but fails to synthesize is logged as a synthesis failure, not as unreachable', async ($, on) => {
+    const w = setup(on, { run: a => (a[0] === 'curl.exe' ? { exitCode: 22, stderr: 'HTTP 500' } : undefined) })
+    await turn($)
     await settle(w)
-    expect(w.played).toHaveLength(2)
+    expect(log(w)).toMatch(/ERR  stop +合成失敗: synthesis: curl 22 HTTP 500/)
+    expect(log(w)).not.toMatch(/接続できない/)
   })
 
   test('lines that arrive together are written to notify.log in one go, in order', async ($, on) => {

@@ -26,6 +26,8 @@ export type WorldOptions = {
   existsFails?: boolean
   // $.model.complete が例外を出す
   modelThrows?: boolean
+  // 再生にかかる実時間（ミリ秒）。重なりを確かめるとき
+  playMs?: number
   now?: number
   // VOICE_NOTIFY_HOME と OS に足す環境変数
   env?: Record<string, string>
@@ -38,6 +40,8 @@ export type World = {
   fetches: Array<{ url: string; method: string; body?: string }>
   asks: Array<Record<string, unknown>>
   played: string[]
+  // 同時に鳴っている数の最大
+  maxPlaying: number
   // 各 process.run の stdin（runs と同じ並び）
   inputs: string[]
   // $.command.register で登録された名前
@@ -103,8 +107,9 @@ export function world(on: On, opts: WorldOptions = {}): World {
     const c = opts.config ?? DEFAULT_CONFIG
     files.set(`${ROOT}/config.json`, typeof c === 'string' ? c : JSON.stringify(c))
   }
-  const w: World = { files, mtimes, runs: [], fetches: [], asks: [], played: [], inputs: [], commands: [], agents: opts.agents ?? [], clock }
+  const w: World = { files, mtimes, runs: [], fetches: [], asks: [], played: [], maxPlaying: 0, inputs: [], commands: [], agents: opts.agents ?? [], clock }
   const engine = opts.engine ?? true
+  let playing = 0
   const players = opts.linuxPlayers ?? ['pw-play']
   const ok = (r: RunResult = {}) => ({
     value: { exitCode: r.exitCode ?? 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -183,6 +188,13 @@ export function world(on: On, opts: WorldOptions = {}): World {
     // 再生（Windows は powershell、macOS は afplay、Linux は sh の再生スクリプト）。どれも argv の最後が wav
     if (cmd === 'powershell' || cmd === 'afplay' || cmd === 'sh') {
       w.played.push(key(argv[argv.length - 1]!))
+      playing++
+      w.maxPlaying = Math.max(w.maxPlaying, playing)
+      try {
+        if (opts.playMs) await new Promise(resolve => setTimeout(resolve, opts.playMs))
+      } finally {
+        playing--
+      }
       return ok() as never
     }
     return ok() as never
