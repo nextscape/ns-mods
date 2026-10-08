@@ -5,6 +5,7 @@ import {
   SYSTEMD_UNIT,
   fillTemplate,
   fromScript,
+  systemdValue,
   installScriptArgv,
   plistPath,
   unitPath,
@@ -17,6 +18,10 @@ describe('autostart', () => {
     expect(fillTemplate('<s>{{RUN}}</s><s>{{RUN}}</s>{{NONE}}', { RUN: '/a&b/run' }, xml)).toBe('<s>/a&amp;b/run</s><s>/a&amp;b/run</s>{{NONE}}')
     expect(fillTemplate('ExecStart="{{RUN}}"', { RUN: '/a&b/run' }, s => s)).toBe('ExecStart="/a&b/run"')
     expect(xml('<a & b>')).toBe('&lt;a &amp; b&gt;')
+  })
+
+  test('systemdValue doubles % so systemd does not read it as a specifier', () => {
+    expect(systemdValue('/home/u/100%/run')).toBe('/home/u/100%%/run')
   })
 
   test('fromScript turns install.ps1 lines into the setup format', () => {

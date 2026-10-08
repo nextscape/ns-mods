@@ -47,6 +47,8 @@ jobs:
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
 
-      - name: Check the POSIX play script
+      - name: Check the POSIX play script (syntax and lock)
         if: runner.os != 'Windows'
-        run: sh -n mods/voice-notify/scripts/posix/play.sh
+        run: |
+          sh -n mods/voice-notify/scripts/posix/play.sh
+          sh mods/voice-notify/tests/posix/test-play-lock.sh

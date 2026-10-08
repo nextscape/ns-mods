@@ -12,7 +12,12 @@ export function xml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-// ひな形の {{KEY}} を置き換える。値は書式に合わせて escape する（plist は XML、systemd の unit はそのまま）
+// systemd の unit の値。% は指定子（%h など）として読まれるので %% にする
+export function systemdValue(s: string): string {
+  return s.replace(/%/g, '%%')
+}
+
+// ひな形の {{KEY}} を置き換える。値は書式に合わせて escape する（plist は xml、systemd の unit は systemdValue）
 export function fillTemplate(template: string, values: Record<string, string>, escape: (s: string) => string): string {
   return template.replace(/\{\{(\w+)\}\}/g, (all, k: string) => (k in values ? escape(values[k]!) : all))
 }

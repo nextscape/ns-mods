@@ -263,6 +263,18 @@ describe('voice-notify', () => {
     expect(w.played.some(p => p.startsWith(`${home}/cache/`))).toBe(true)
   })
 
+  test('on Linux a player installed later is found without reopening the session', async ($, on) => {
+    const players: string[] = []
+    const w = setup(on, { os: 'linux', linuxPlayers: players })
+    await turn($, { durationMs: 10_000 })
+    await settle(w)
+    expect(w.played).toEqual([])
+    players.push('paplay')
+    await turn($, { durationMs: 10_000 })
+    await settle(w)
+    expect(w.played).toHaveLength(1)
+  })
+
   test('a curl that cannot start is logged as a synthesis failure, after the phrase', async ($, on) => {
     const w = setup(on, { missing: ['curl.exe'] })
     await turn($)

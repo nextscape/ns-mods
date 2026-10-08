@@ -6,8 +6,12 @@ VOICEVOX ENGINE を必要なときだけ起動する。
 #>
 param([string]$EnginePath = "", [switch]$Quiet)
 
-$VHome = "$env:VOICE_NOTIFY_HOME".Trim().TrimEnd('\', '/')
-if (-not $VHome) { $VHome = Join-Path $env:USERPROFILE ".claude\voice-notify" }
+# ログオン時はホームの bin\ から呼ばれるので、bin の親がホーム（環境変数より確実）。setup の中ではプラグインから呼ばれ、環境変数で決める
+$VHome = Split-Path -Parent $PSScriptRoot
+if ((Split-Path -Leaf $PSScriptRoot) -ne "bin" -or -not (Test-Path -LiteralPath (Join-Path $VHome "config.json"))) {
+  $VHome = "$env:VOICE_NOTIFY_HOME".Trim().TrimEnd('\', '/')
+  if (-not $VHome) { $VHome = Join-Path $env:USERPROFILE ".claude\voice-notify" }
+}
 $Port = 50021
 try {
   $c = Get-Content (Join-Path $VHome "config.json") -Raw -Encoding UTF8 | ConvertFrom-Json

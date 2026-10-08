@@ -10,7 +10,8 @@ held=0
 i=0
 while [ "$i" -lt 200 ]; do
   if mkdir "$lock" 2>/dev/null; then held=1; break; fi
-  if [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then rmdir "$lock" 2>/dev/null; continue; fi
+  # 古いロックは消して、すぐ取り直す（確かめるのは1秒に1回）。消せない（中にファイルがあるなど）ときは、ふつうに待ち続ける
+  if [ $((i % 10)) -eq 0 ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$lock" 2>/dev/null; then continue; fi
   sleep 0.1
   i=$((i + 1))
 done

@@ -21,7 +21,7 @@ import type { Os } from './os'
 import { jobsStamp, phraseBusy, phraseJobs } from './phrases'
 import type { PhraseState } from './phrases'
 import { LINUX_PLAYERS, playArgv, probeArgv } from './player'
-import { LAUNCHD_LABEL, SYSTEMD_UNIT, fillTemplate, fromScript, installScriptArgv, plistPath, unitPath, windowsInstallArgs, xml } from './autostart'
+import { LAUNCHD_LABEL, SYSTEMD_UNIT, fillTemplate, fromScript, installScriptArgv, plistPath, systemdValue, unitPath, windowsInstallArgs, xml } from './autostart'
 import { HINT, INSTALL_HINT, LEGACY_BIN, LEGACY_STATE_DIRS, doctorReport, ng, ok, parseCommand, step, unknownArg, voiceStatus, warn } from './setup'
 import type { SetupAction, VoiceAction } from './setup'
 import { appendLog, logLine, phraseMemo } from './store'
@@ -336,13 +336,15 @@ async function pruneCache($: EngineInterface, ctx: Ctx): Promise<void> {
 
 // ================================================================ 再生
 
+// 見つかったものだけを覚える。「無い」は覚えない（あとから入れたら、セッションを開き直さずに鳴る。
+// 探し直しが走るのは鳴らせない環境だけなので、無駄は小さい）
 async function findLinuxPlayer($: EngineInterface): Promise<string | null> {
-  if (linuxPlayer !== undefined) return linuxPlayer
+  if (linuxPlayer) return linuxPlayer
   for (const name of LINUX_PLAYERS) {
     const r = await run($, probeArgv(name))
     if (r.exitCode === 0 && r.stdout.trim()) return (linuxPlayer = name)
   }
-  return (linuxPlayer = null)
+  return null
 }
 
 const fileName = (p: string) => p.slice(p.replace(/\\/g, '/').lastIndexOf('/') + 1)
@@ -860,8 +862,7 @@ async function installAutostartAndHotkey($: EngineInterface, ctx: Ctx, engine: F
     out.push(r.exitCode === 0 ? ok(`launchd: ${plist}`) : ng(`launchctl bootstrap が失敗: ${r.stderr.trim()}`))
   } else {
     const unit = unitPath(home)
-    // unit の書式は XML ではないので、値はそのまま入れる
-    await $.fs.write(unit, fillTemplate(await $.fs.read(`${$.plugin.root}/scripts/linux/voice-notify-engine.service`), values, s => s))
+    await $.fs.write(unit, fillTemplate(await $.fs.read(`${$.plugin.root}/scripts/linux/voice-notify-engine.service`), values, systemdValue))
     await run($, ['systemctl', '--user', 'daemon-reload'])
     const r = await run($, ['systemctl', '--user', 'enable', '--now', SYSTEMD_UNIT])
     out.push(r.exitCode === 0 ? ok(`systemd: ${unit}`) : ng(`systemctl --user enable が失敗: ${r.stderr.trim()}`))
