@@ -31,6 +31,27 @@ describe('voice-notify commands', () => {
     expect(w.files.get(`${ROOT}/state/phrases-stamp`)).toBe(jobsStamp(phraseJobs(PHRASE_CFG, ROOT), PHRASE_CFG))
   })
 
+  test('filling in beside phrases of unknown settings (0.2.0, no stamp) leaves no stamp, so doctor asks for force', async ($, on) => {
+    // 0.2.0 のフレーズは先頭の無音が無い。stamp を書くと doctor が作り直しを案内せず、頭が欠けたまま鳴る
+    const jobs = phraseJobs(PHRASE_CFG, ROOT)
+    const w = setup(on, { files: Object.fromEntries(jobs.slice(1).map(j => [j.path, 'RIFF'])) })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: ROOT } as never)
+    await settle(w)
+    expect(synths(w)).toHaveLength(1)
+    expect(w.files.has(`${ROOT}/state/phrases-stamp`)).toBe(false)
+    expect(await run($, 'voice-notify', 'doctor')).toMatch(/setup force で作り直す/)
+  })
+
+  test('filling in beside phrases made with the current settings keeps the stamp', async ($, on) => {
+    const jobs = phraseJobs(PHRASE_CFG, ROOT)
+    const stamp = jobsStamp(jobs, PHRASE_CFG)
+    const w = setup(on, { files: { ...Object.fromEntries(jobs.slice(1).map(j => [j.path, 'RIFF'])), [`${ROOT}/state/phrases-stamp`]: stamp } })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: ROOT } as never)
+    await settle(w)
+    expect(synths(w)).toHaveLength(1)
+    expect(w.files.get(`${ROOT}/state/phrases-stamp`)).toBe(stamp)
+  })
+
   test('the session start leaves the phrases to another session that is generating them', async ($, on) => {
     const w = setup(on, { files: { [`${ROOT}/state/phrases-progress`]: '{"done":3,"total":14}' } })
     w.mtimes.set(`${ROOT}/state/phrases-progress`, w.clock.now())

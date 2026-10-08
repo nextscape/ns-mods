@@ -1,6 +1,6 @@
 {
   "name": "voice-notify",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Speaks Claude Code turn results aloud with VOICEVOX on Windows, macOS and Linux (CLI); long turns are summarized by Haiku inside the session (no extra API key, no session context touched)",
   "author": { "name": "Nextscape Inc." },
   "license": "MIT",

@@ -698,6 +698,9 @@ async function generatePhrases($: EngineInterface, ctx: Ctx, force: boolean): Pr
     const jobs = phraseJobs(ctx.cfg, ctx.root)
     const stamp = `${ctx.root}/state/phrases-stamp`
     if (force) await removeFiles($, ctx.os, [...(await phraseFolderWavs($, jobs)), stamp])
+    // 流用するフレーズが今の設定で作ったものと分からなければ stamp を書かない（0.2.0 のものは先頭の無音が無い）。
+    // 書くと doctor が作り直しを案内せず、古いフレーズが鳴り続ける
+    const keptCurrent = force || (await $.fs.read(stamp).catch(() => '')).trim() === jobsStamp(jobs, ctx.cfg)
     const speakers = ctx.cfg.speakers ?? {}
     let made = 0
     let kept = 0
@@ -712,7 +715,7 @@ async function generatePhrases($: EngineInterface, ctx: Ctx, force: boolean): Pr
       }
       await $.fs.write(`${ctx.root}/state/phrases-progress`, JSON.stringify({ done: i + 1, total: jobs.length }))
     }
-    if (failed === 0) await $.fs.write(stamp, jobsStamp(jobs, ctx.cfg))
+    if (failed === 0 && (kept === 0 || keptCurrent)) await $.fs.write(stamp, jobsStamp(jobs, ctx.cfg))
     await writeLog($, ctx.root, failed ? 'WARN' : 'INFO', 'phrases', `生成 ${made} 件 / 既存流用 ${kept} 件 / 失敗 ${failed} 件`)
   } finally {
     generating = false
