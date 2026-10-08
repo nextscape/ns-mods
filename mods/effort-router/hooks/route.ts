@@ -30,8 +30,9 @@ const REPLY_RULE =
 export const ESCALATE_STEPS = 10
 export const ESCALATE_ERRORS = 2
 
-// Prompts this short ("続けて", "OK") skip the classifier and inherit,
-// unless they pick an offered option or answer a question.
+// Prompts this short made only of agreement ("続けて", "OK") skip the
+// classifier and inherit, unless they pick an offered option or answer a
+// question. Any other short prompt ("全体を監査して", "やめて") is judged.
 export const MIN_CHARS = 20
 
 const MAX_OPTIONS = 10
@@ -154,10 +155,10 @@ export function compose(
     )
   }
   // A bare "OK" pulls the judgment to low whatever it agrees to, so a reply
-  // to a question is stated as the request for the proposed work it is. Not
-  // so a short prompt beside offered options it did not pick, nor a typed
-  // AskUserQuestion answer: those say what to do themselves.
-  const agrees = why === 'reply' && (prev?.options ?? []).length === 0 && !('questions' in route)
+  // to a question (only ever agreement, see plan) is stated as the request
+  // for the proposed work it is, offered options or not. Not so a typed
+  // AskUserQuestion answer: that says what to do itself.
+  const agrees = why === 'reply' && !('questions' in route)
   lines.push(
     agrees
       ? `[request] go ahead with what [prev_answer_tail] proposed (the reply was: ${clip(compact(request))})`
@@ -257,15 +258,25 @@ export function picked(text: string, options: readonly Option[]): Option[] | nul
   return chosen.filter((one, i): one is Option => one !== undefined && chosen.indexOf(one) === i)
 }
 
+const AGREE =
+  /^(?:ok|okay|おk|おけ|おっけー|オッケー|はい|うん|ええ|了解|りょうかい|承知|yes|yep|sure|please|go|ahead|lgtm|お願い|おねがい|よろしく|頼む|頼みます|どうぞ|ぜひ|それで|これで|そう|いい|良い|進めて|すすめて|やって|続けて|つづけて|続き|続行|して|します|いたします|致します|ください|下さい|です|じゃあ|では|で|よ|ね|も|お)+$/
+
+// Whether the prompt only agrees or says go on ("OK", "はい、進めてください",
+// "続けて"), naming no work of its own. "いいえ", "やめて", "もういい" do not.
+export function isAgreement(text: string): boolean {
+  return AGREE.test(normalize(text).toLowerCase().replace(/[\s、,。.．!！~〜…・]/g, ''))
+}
+
 export type Route = { why: 'auto' | 'choice' | 'reply'; selected: readonly Option[] }
 export type Plan = { kind: 'keep' } | ({ kind: 'judge' } & Route)
 
-// How to read this prompt: a pick of offered options, a short reply to a
-// question, a short prompt with nothing to read it against, or a request.
+// How to read this prompt: a pick of offered options, a short agreement to a
+// question, a short agreement with nothing to read it against, or a request
+// (a short one naming its own work, or declining, included).
 export function plan(text: string, prev: TurnSignals | null): Plan {
   const selected = picked(text, prev?.options ?? [])
   if (selected) return { kind: 'judge', why: 'choice', selected }
-  if (text.length >= MIN_CHARS) return { kind: 'judge', why: 'auto', selected: [] }
+  if (text.length >= MIN_CHARS || !isAgreement(text)) return { kind: 'judge', why: 'auto', selected: [] }
   if (prev?.asks === true) return { kind: 'judge', why: 'reply', selected: [] }
   return { kind: 'keep' }
 }

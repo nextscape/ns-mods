@@ -101,6 +101,12 @@ export const CASES: EvalCase[] = [
   { name: 'reply-yes-to-investigation', request: 'はい', prev: light('テストを流して', '…split.test.ts だけが落ちています。原因を調査して修正まで進めますか？'), recent: ['medium'], expect: 'high' },
   { name: 'reply-ok-to-design', request: 'ＯＫ', prev: light('macOS と Linux にも対応させたい', '…かなり大きな作り直しになります。進めるなら、まず仕様の詰めから始め、設計文書にしてから実装に入りたいと思います。それでよいですか？'), recent: ['medium'], expect: 'high' },
   { name: 'reply-ok-to-commit', request: 'OK', prev: heavy('原因を調べて直して', '…修正してテストが通りました。この内容でコミットしますか？'), recent: ['xhigh'], expect: 'low' },
+  { name: 'reply-ok-beside-list', request: 'OK', prev: light('fetchUser の置き換え方針をまとめて', '…1. 型定義の更新 2. API 層の差し替え 3. プロジェクト全体の呼び出し元の置き換え。この順で全体の移行作業に入りますか？', choices('型定義の更新', 'API 層の差し替え', 'プロジェクト全体の呼び出し元の置き換え')), recent: ['medium'], expect: 'xhigh' },
+
+  // A short prompt that names its own work, or declines, is judged as a request.
+  { name: 'short-audit-after-light', request: 'リポジトリ全体を監査して', prev: light('typo を直して', '…直しました。'), recent: ['medium'], expect: 'xhigh' },
+  { name: 'short-cause-after-question', request: '落ちる原因を調べて', prev: light('テストを流して', '…split.test.ts だけが落ちています。ほかは通ったのでコミットしますか？'), recent: ['medium'], expect: 'high' },
+  { name: 'short-decline-after-proposal', request: 'いや、やめておいて', prev: heavy('原因を調べて直して', '…根本的に直すなら設計の見直しが必要です。進めますか？'), recent: ['xhigh'], expect: 'low' },
 
   // An AskUserQuestion answer mid-turn: the picked option's meaning decides.
   { name: 'asked-commit-in-heavy-turn', request: '(AskUserQuestion)', asked: ask('次にどう進めますか？', '進め方', NEXT_STEP, 'コミットして終了'), prev: heavy('キャッシュ層の設計案を比較して', ''), recent: ['xhigh'], expect: 'low' },

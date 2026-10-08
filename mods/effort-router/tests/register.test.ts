@@ -218,6 +218,23 @@ describe('effort-router', () => {
     expect(seen.sent).toEqual(['high', 'high'])
   })
 
+  test('a short prompt naming its own work is judged', async ($, on) => {
+    const seen = world(on, [label('low'), label('xhigh')])
+    await turn($, LONG, { answer: '直しました。' })
+    await turn($, 'リポジトリ全体を監査して')
+    expect(seen.inputs.length).toBe(2)
+    expect(seen.inputs[1]!.split('\n').pop()).toBe('[request chars=12] リポジトリ全体を監査して')
+    expect(seen.sent).toEqual(['low', 'xhigh'])
+  })
+
+  test('a short agreement beside offered options is read as the proposed work', async ($, on) => {
+    const seen = world(on, [label('medium'), label('xhigh')])
+    await turn($, LONG, { answer: '変更点:\n1. 型定義\n2. API 層\n3. 呼び出し元\nこの順で移行しますか？' })
+    await turn($, 'OK')
+    expect(seen.inputs[1]!.split('\n').pop()).toBe('[request] go ahead with what [prev_answer_tail] proposed (the reply was: OK)')
+    expect(seen.status.at(-1)).toBe('xhigh (reply to question)')
+  })
+
   test('a picked option is judged by its text', async ($, on) => {
     const seen = world(on, [label('xhigh'), label('medium')])
     await turn($, LONG, { answer: '設計しました。\n1. 案2で実装を進める\n2. 設計を見直す\n3. コミットして終了' })
@@ -365,7 +382,7 @@ describe('effort-router', () => {
   test('eval scores every case and counts judgments that are too low', async ($, on) => {
     world(on, Array.from({ length: 50 }, () => label('medium')))
     const { text } = await run($, 'eval')
-    expect(text).toMatch(/^eval: \d+\/32 match, \d+ judged too low/)
+    expect(text).toMatch(/^eval: \d+\/36 match, \d+ judged too low/)
     expect(text).toContain('LOW ctx-still-broken')
   })
 })

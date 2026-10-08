@@ -10,6 +10,7 @@ import {
   effortArg,
   escalate,
   fromAsked,
+  isAgreement,
   isNotice,
   isRouted,
   levelOf,
@@ -192,11 +193,23 @@ describe('route', () => {
     expect(asksOf('…修正しました。', optionsOf(ANSWER))).toBe(true)
   })
 
-  test('plan: a pick, a reply to a question, a bare short prompt, a request', () => {
+  test('agreement is told from a short prompt naming its own work or declining', () => {
+    const agreeing = ['OK', 'ＯＫ', 'はい', 'はい、進めてください', 'それでお願いします。', '続けて', 'よろしくお願いします', 'いいね', 'Go ahead', 'LGTM!']
+    const other = ['いいえ', 'やめて', 'もういい', 'リポジトリ全体を監査して', '落ちる原因を調べて', 'OK、コミットして', '2で、テストも追加して', '5', '?']
+    expect(agreeing.filter(text => !isAgreement(text))).toEqual([])
+    expect(other.filter(isAgreement)).toEqual([])
+  })
+
+  test('plan: a pick, a reply to a question, a bare agreement, a request', () => {
     expect(plan('3', signals())).toMatchObject({ kind: 'judge', why: 'choice' })
     expect(plan('はい', signals([], true))).toEqual({ kind: 'judge', why: 'reply', selected: [] })
+    expect(plan('OK', signals())).toEqual({ kind: 'judge', why: 'reply', selected: [] })
     expect(plan('続けて', signals([], false))).toEqual({ kind: 'keep' })
     expect(plan('続けて', null)).toEqual({ kind: 'keep' })
+    expect(plan('リポジトリ全体を監査して', signals([], false))).toEqual({ kind: 'judge', why: 'auto', selected: [] })
+    expect(plan('リポジトリ全体を監査して', null)).toEqual({ kind: 'judge', why: 'auto', selected: [] })
+    expect(plan('いや、やめて', signals([], true))).toEqual({ kind: 'judge', why: 'auto', selected: [] })
+    expect(plan('2で、テストも追加して', signals())).toEqual({ kind: 'judge', why: 'auto', selected: [] })
     expect(plan('この関数の命名だけ確認したいのですが問題ないでしょうか', signals())).toEqual({
       kind: 'judge',
       why: 'auto',
@@ -204,12 +217,16 @@ describe('route', () => {
     })
   })
 
-  test('a reply to a question is read as the proposed work; one beside options or typed to AskUserQuestion is not', () => {
+  test('a reply to a question is read as the proposed work, beside options too; one typed to AskUserQuestion is not', () => {
     const reply = { why: 'reply', selected: [] } as const
     expect(compose('ＯＫ', signals([], true), ['xhigh'], reply).split('\n').pop()).toBe(
       '[request] go ahead with what [prev_answer_tail] proposed (the reply was: ＯＫ)',
     )
-    expect(compose('5', signals(), ['xhigh'], reply).split('\n').pop()).toBe('[request chars=1] 5')
+    expect(compose('OK', signals(), ['xhigh'], reply).split('\n').pop()).toBe(
+      '[request] go ahead with what [prev_answer_tail] proposed (the reply was: OK)',
+    )
+    const auto = { why: 'auto', selected: [] } as const
+    expect(compose('いや、やめて', signals([], true), ['xhigh'], auto).split('\n').pop()).toBe('[request chars=6] いや、やめて')
     const typed = fromAsked({
       questions: [{ question: 'どう進めますか？', header: '進め方', options: [{ label: '実装する' }], multiSelect: false }],
       answers: { 'どう進めますか？': '原因を先に調べて' },
