@@ -20,7 +20,7 @@
     {
       "name": "voice-notify",
       "source": "./mods/voice-notify",
-      "description": "VOICEVOX による音声通知と Haiku 要約（Windows。macOS・Linux は試験的）"
+      "description": "VOICEVOX による音声通知と Haiku 要約（Windows。macOS・Linux は試験的）。音声：VOICEVOX:四国めたん、VOICEVOX:ずんだもん"
     },
     {
       "name": "git-nudge",

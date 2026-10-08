@@ -67,7 +67,7 @@ describe('voice-notify commands', () => {
     expect(await run($, 'voice-notify')).toBe('音声通知: 再開しました')
     expect(w.files.has(`${ROOT}/state/mute`)).toBe(false)
     expect(w.played.map(p => p.split('/').slice(-2, -1)[0])).toEqual(['mute', 'unmute'])
-    expect(await run($, 'voice-notify', 'status')).toBe('手動ミュート: OFF\nマイク使用中の自動ミュート: 無効\n話者: 最終 めたん / 中間 ずんだもん / 話速: 1.3')
+    expect(await run($, 'voice-notify', 'status')).toBe('手動ミュート: OFF\nマイク使用中の自動ミュート: 無効\n話者: 最終 めたん / 中間 ずんだもん / 話速: 1.3\nクレジット: VOICEVOX')
     expect(await run($, 'voice-notify', 'loud')).toMatch(/^知らない引数です: loud。使い方: \/voice-notify \[on\|off\|status\]/)
   })
 

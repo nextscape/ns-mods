@@ -23,7 +23,7 @@ import { jobsStamp, phraseBusy, phraseJobs } from './phrases'
 import type { PhraseState } from './phrases'
 import { LINUX_PLAYERS, playArgv, probeArgv } from './player'
 import { LAUNCHD_LABEL, SYSTEMD_UNIT, fillTemplate, fromScript, installScriptArgv, plistPath, systemdValue, unitPath, windowsInstallArgs, xml } from './autostart'
-import { HINT, INSTALL_HINT, LEGACY_BIN, LEGACY_STATE_DIRS, doctorReport, ng, ok, parseCommand, step, unknownArg, voiceStatus, warn } from './setup'
+import { HINT, INSTALL_HINT, LEGACY_BIN, LEGACY_STATE_DIRS, creditLine, doctorReport, ng, ok, parseCommand, step, unknownArg, voiceStatus, warn } from './setup'
 import type { SetupAction, VoiceAction } from './setup'
 import { appendLog, logLine, phraseMemo } from './store'
 import type { Level } from './store'
@@ -840,6 +840,7 @@ async function doctor($: EngineInterface, ctx: Ctx): Promise<string[]> {
     muted: await isMuted($, ctx.root),
     legacy: (await legacyFiles($, ctx.root)).length,
     errors,
+    credit: creditLine(ctx.cfg),
   })
 }
 

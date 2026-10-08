@@ -71,7 +71,15 @@ export function voiceStatus(cfg: VoiceConfig, os: Os, muted: boolean): string {
     `手動ミュート: ${muted ? 'ON' : 'OFF'}`,
     `マイク使用中の自動ミュート: ${os === 'windows' && cfg.mute?.whenMicInUse ? '有効' : '無効'}`,
     `話者: 最終 ${label(voiceFor(cfg, 'final').name)} / 中間 ${label(voiceFor(cfg, 'interim').name)} / 話速: ${cfg.speedScale ?? 1}`,
+    `クレジット: ${creditLine(cfg)}`,
   ].join('\n')
+}
+
+// 音源の規約はアプリでの利用に「少し探せばわかる場所」へのクレジット表記を求める。
+// 使っている話者の speakers.*.credit を並べる。credit の無い話者は VOICEVOX とだけ書く
+export function creditLine(cfg: VoiceConfig): string {
+  const names = [voiceFor(cfg, 'final').name, voiceFor(cfg, 'interim').name]
+  return [...new Set(names.map(n => cfg.speakers?.[n]?.credit ?? 'VOICEVOX'))].join('、')
 }
 
 // ENGINE 0.24 から英単語をカタカナで読む
@@ -94,6 +102,7 @@ export type DoctorFacts = {
   muted: boolean
   legacy: number // 0.2.0 の残りの件数
   errors: string[] // 直近200行の ERR の行
+  credit: string // creditLine
 }
 
 export function doctorReport(f: DoctorFacts): string[] {
@@ -118,5 +127,6 @@ export function doctorReport(f: DoctorFacts): string[] {
   out.push(ok(f.muted ? `手動ミュート中（${HINT.unmute} で解除）` : 'ミュートなし'))
   if (f.legacy) out.push(warn(`0.2.0 の残りがある（${f.legacy} 件）。${HINT.setup} で消える`))
   out.push(f.errors.length ? warn(`直近200行にエラー ${f.errors.length} 件。最後: ${f.errors.at(-1)!.slice(21)}`) : ok('直近200行にエラーなし'))
+  out.push(step('クレジット'), ok(f.credit))
   return out
 }

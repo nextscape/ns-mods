@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { USAGE, doctorReport, hasKanaReading, parseCommand, voiceStatus } from '../hooks/setup'
+import { USAGE, creditLine, doctorReport, hasKanaReading, parseCommand, voiceStatus } from '../hooks/setup'
 import type { DoctorFacts } from '../hooks/setup'
 import { DEFAULT_CONFIG } from './world'
 
@@ -18,6 +18,7 @@ const FACTS: DoctorFacts = {
   muted: false,
   legacy: 1,
   errors: [],
+  credit: 'VOICEVOX:四国めたん',
 }
 
 describe('setup', () => {
@@ -35,12 +36,26 @@ describe('setup', () => {
     expect(USAGE).toBe('使い方: /voice-notify [on|off|status]（省略時は切替） / /voice-notify setup [force] / /voice-notify doctor / /voice-notify remove')
   })
 
-  test('voiceStatus is three lines; mic muting is only on Windows', () => {
-    expect(voiceStatus(DEFAULT_CONFIG, 'windows', false)).toBe('手動ミュート: OFF\nマイク使用中の自動ミュート: 無効\n話者: 最終 めたん / 中間 ずんだもん / 話速: 1.3')
+  test('voiceStatus is four lines, the last the credit; mic muting is only on Windows', () => {
+    expect(voiceStatus(DEFAULT_CONFIG, 'windows', false)).toBe('手動ミュート: OFF\nマイク使用中の自動ミュート: 無効\n話者: 最終 めたん / 中間 ずんだもん / 話速: 1.3\nクレジット: VOICEVOX')
     expect(voiceStatus({ ...DEFAULT_CONFIG, mute: { whenMicInUse: true } }, 'windows', true).split('\n').slice(0, 2)).toEqual([
       '手動ミュート: ON', 'マイク使用中の自動ミュート: 有効',
     ])
     expect(voiceStatus({ ...DEFAULT_CONFIG, mute: { whenMicInUse: true } }, 'linux', false).split('\n')[1]).toBe('マイク使用中の自動ミュート: 無効')
+  })
+
+  test('creditLine names the credit of each speaker in use, once each; a speaker without one is plain VOICEVOX', () => {
+    const speakers = { metan: { id: 2, credit: 'VOICEVOX:四国めたん' }, zundamon: { id: 3, credit: 'VOICEVOX:ずんだもん' }, x: { id: 9, credit: 'VOICEVOX:X' } }
+    expect(creditLine({ speaker: 'metan', speakerInterim: 'zundamon', speakers })).toBe('VOICEVOX:四国めたん、VOICEVOX:ずんだもん')
+    expect(creditLine({ speaker: 'metan', speakerInterim: 'metan', speakers })).toBe('VOICEVOX:四国めたん')
+    expect(creditLine({ speaker: 'metan', speakerInterim: 'zundamon', speakers: { metan: { id: 2 }, zundamon: { id: 3 } } })).toBe('VOICEVOX')
+  })
+
+  test('creditLine names the credit of each speaker in use, once each; a speaker without one is plain VOICEVOX', () => {
+    const speakers = { metan: { id: 2, credit: 'VOICEVOX:四国めたん' }, zundamon: { id: 3, credit: 'VOICEVOX:ずんだもん' }, x: { id: 9, credit: 'VOICEVOX:X' } }
+    expect(creditLine({ speaker: 'metan', speakerInterim: 'zundamon', speakers })).toBe('VOICEVOX:四国めたん、VOICEVOX:ずんだもん')
+    expect(creditLine({ speaker: 'metan', speakerInterim: 'metan', speakers })).toBe('VOICEVOX:四国めたん')
+    expect(creditLine({ speaker: 'metan', speakerInterim: 'zundamon', speakers: { metan: { id: 2 }, zundamon: { id: 3 } } })).toBe('VOICEVOX')
   })
 
   test('hasKanaReading from ENGINE 0.24', () => {
@@ -60,7 +75,7 @@ describe('setup', () => {
     expect(out).toMatch(/注意 定型フレーズが足りない: 14\/14 件。\/voice-notify setup を実行する/)
     expect(out).toMatch(/OK   ログオン時起動（systemd）: enabled/)
     expect(out).toMatch(/注意 0\.2\.0 の残りがある（1 件）。\/voice-notify setup で消える/)
-    expect(out).toMatch(/OK   直近200行にエラーなし$/)
+    expect(out).toMatch(/OK   直近200行にエラーなし\n\n== クレジット\n   OK   VOICEVOX:四国めたん$/)
   })
 
   test('doctorReport names what is missing', () => {

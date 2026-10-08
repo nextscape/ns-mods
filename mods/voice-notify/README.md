@@ -6,6 +6,7 @@
 > nothing added to your conversation, but the call does use your plan or API key, and the full reply text is sent to Haiku.
 > Runs on Windows; macOS and Linux are experimental (covered by automated tests only). VOICEVOX and the Claude Code CLI are required.
 > Install: `/plugin install voice-notify --marketplace nextscape/ns-mods`, open a new session, then run `/voice-notify setup`.
+> Voices: VOICEVOX:四国めたん, VOICEVOX:ずんだもん.
 
 Claude Code のターン完了・許可待ち・サブエージェントの報告・エラーなどを、VOICEVOX の声で知らせます。
 作業時間の長いターンは、応答を Claude Haiku で1文に要約して読み上げます。
@@ -13,6 +14,8 @@ Claude Code のターン完了・許可待ち・サブエージェントの報�
 - 要約は Claude Code の中で動く mod が行います。別の API キーは要りません。要約のやり取りは会話に入りません。
 - 要約は利用者のプランまたは API キーを使い、応答の本文を Haiku に送ります。詳しくは[データと費用](#データと費用)を見てください。
 - 鳴らす・黙るの判断（短いターンは完了だけ告げる、マイク使用中は黙る、など）は、すべてローカルで行います。
+
+音声：VOICEVOX:四国めたん、VOICEVOX:ずんだもん（[クレジット表記](#クレジット表記)）
 
 ## 前提
 
@@ -221,7 +224,9 @@ npx -y -p typescript tsc -p mods/voice-notify --noEmit   # 型（tsconfig.json �
 - 音源利用規約: https://zunko.jp/con_ongen_kiyaku.html
 - VOICEVOX ソフトウェア利用規約: https://voicevox.hiroshiba.jp/term/
 
-手元の PC で作業通知として聞くだけなら、公開・配布には当たらないと考えています（当社の解釈です。最終的には各規約を確認してください）。生成した音声を外部に出す場合は、上記に従ってください。
+`/voice-notify status` と `/voice-notify doctor` も、使っている話者のクレジット（`speakers.*.credit`）を表示します。話者を足すときは `credit` も書いてください（無いと `VOICEVOX` とだけ表示します）。
+
+生成した音声を動画などに使って公開する場合は、その説明欄などに上記のクレジットを書いてください。
 
 ## ライセンス
 
