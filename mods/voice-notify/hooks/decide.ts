@@ -160,6 +160,22 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
 }
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+// 正しい JSON でも、オブジェクトでなければ（null・配列など）壊れた設定として扱う
 export function parseConfig(text: string): VoiceConfig {
-  return JSON.parse(stripBom(text)) as VoiceConfig
+  const v: unknown = JSON.parse(stripBom(text))
+  if (!isObject(v)) throw new Error('config.json の中身がオブジェクトではない')
+  return v as VoiceConfig
+}
+
+// 同梱の既定の設定に、利用者の設定を重ねる。オブジェクトはキーごとに重ね、配列と値は利用者のものを使う
+// （0.2.0 からの config.json に無いキーも、既定値で動く）
+export function mergeConfig(defaults: Record<string, unknown>, user: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...defaults }
+  for (const [k, v] of Object.entries(user)) {
+    const d = defaults[k]
+    out[k] = isObject(d) && isObject(v) ? mergeConfig(d, v) : v
+  }
+  return out
 }

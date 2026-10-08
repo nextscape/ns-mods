@@ -5,6 +5,7 @@ import {
   agentText,
   choosePhrase,
   enginePort,
+  mergeConfig,
   noticeKind,
   parseConfig,
   permissionText,
@@ -59,6 +60,7 @@ let knownOs: Os | null = null
 let linuxPlayer: string | null | undefined
 let warnedConfig = false
 let warnedNoPlayer = false
+let defaults: { text: string; cfg: VoiceConfig } | null = null
 // このセッションがフレーズを生成している最中か
 let generating = false
 
@@ -187,23 +189,30 @@ async function homeRoot($: EngineInterface): Promise<string | null> {
   return voiceHome(await $.env.get('VOICE_NOTIFY_HOME'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
 }
 
-// まず読む。無いときだけ同梱の既定をコピーする（あるのに読めないときは上書きしない）
+// 同梱の既定の設定。モジュールの中で1回だけ読む（プラグインの更新で読み込み直されるので、古くならない）
+async function shippedDefaults($: EngineInterface): Promise<{ text: string; cfg: VoiceConfig }> {
+  if (!defaults) {
+    const text = await $.fs.read(`${$.plugin.root}/config.default.json`)
+    defaults = { text, cfg: parseConfig(text) }
+  }
+  return defaults
+}
+
+// まず読む。無いときだけ同梱の既定をコピーする（あるのに読めないときは上書きしない）。
+// 読めたら既定に重ねる（利用者の config.json に無いキーは既定値で動く）
 async function loadConfig($: EngineInterface, root: string): Promise<{ cfg: VoiceConfig } | { error: string }> {
   const path = `${root}/config.json`
-  let text: string
   try {
-    text = await $.fs.read(path)
-  } catch (err) {
-    if (await $.fs.exists(path)) return { error: String(err) }
+    const base = await shippedDefaults($)
+    let text: string
     try {
-      text = await $.fs.read(`${$.plugin.root}/config.default.json`)
-      await $.fs.write(path, text)
-    } catch (copyErr) {
-      return { error: String(copyErr) }
+      text = await $.fs.read(path)
+    } catch (err) {
+      if (await $.fs.exists(path)) return { error: String(err) }
+      await $.fs.write(path, base.text)
+      text = base.text
     }
-  }
-  try {
-    return { cfg: parseConfig(text) }
+    return { cfg: mergeConfig(base.cfg, parseConfig(text)) as VoiceConfig }
   } catch (err) {
     return { error: String(err) }
   }

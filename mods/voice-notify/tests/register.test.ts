@@ -199,6 +199,22 @@ describe('voice-notify', () => {
     expect(log(w).match(/config\.json を読めない/g)).toHaveLength(1)
   })
 
+  test('keys missing from config.json fall back to the shipped defaults', async ($, on) => {
+    // 0.2.0 からの config.json に、notification.toolLabels が無い場合など
+    const w = setup(on, { config: { speaker: 'metan', speakers: { metan: { id: 2 } } } })
+    await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: {} } as never)
+    await settle(w)
+    expect(log(w)).toMatch(/コマンド実行の許可待ちです。/)
+  })
+
+  test('a config.json that is not an object (null) says so once and plays nothing', async ($, on) => {
+    const w = setup(on, { config: 'null' })
+    await turn($)
+    await settle(w)
+    expect(w.played).toEqual([])
+    expect(log(w)).toMatch(/config\.json を読めないので鳴らさない: .*オブジェクト/)
+  })
+
   test('a missing config.json is copied from the default and used', async ($, on) => {
     const w = setup(on, { config: null })
     await turn($, { durationMs: 10_000 })

@@ -5,6 +5,7 @@ import {
   agentText,
   choosePhrase,
   enginePort,
+  mergeConfig,
   noticeKind,
   parseConfig,
   permissionText,
@@ -124,6 +125,25 @@ describe('decide', () => {
     expect(choosePhrase(['01.wav'], '01.wav', 0.9)).toBe('01.wav')
     expect(choosePhrase(['01.wav', '02.wav', '03.wav'], null, 0.99)).toBe('03.wav')
     expect(choosePhrase([], null, 0)).toBeNull()
+  })
+
+  test('parseConfig refuses anything but an object', () => {
+    expect(() => parseConfig('null')).toThrow(/オブジェクト/)
+    expect(() => parseConfig('[]')).toThrow(/オブジェクト/)
+    expect(() => parseConfig('"x"')).toThrow(/オブジェクト/)
+  })
+
+  test('mergeConfig: objects merge key by key; arrays and values from the user win; unknown user keys stay', () => {
+    const defaults = { speaker: 'metan', speech: { summarize: true, readings: { FIX: 'フィックス' }, summaryPrompt: ['a', 'b'] }, playback: { leadSilenceMs: 600 } }
+    const user = { speech: { summarize: false, summaryPrompt: ['c'] }, extra: 1 }
+    expect(mergeConfig(defaults, user)).toEqual({
+      speaker: 'metan',
+      speech: { summarize: false, readings: { FIX: 'フィックス' }, summaryPrompt: ['c'] },
+      playback: { leadSilenceMs: 600 },
+      extra: 1,
+    })
+    // null は「消す」ではなく、値として利用者のものを使う
+    expect(mergeConfig({ a: { b: 1 } }, { a: null })).toEqual({ a: null })
   })
 
   test('voiceHome and parseConfig are unchanged from 0.2.0', () => {
