@@ -6,9 +6,13 @@ import { LABELS } from '../hooks/route'
 
 const label = (level: string) => LABELS.find(one => one === level)
 
+// The visible text each coming model request answers with, in turn.
+const replies: string[] = []
+
 // The engine beneath the plugin: classify answers from `answers` in turn
-// (an Error throws), the model request records the effort it was sent with,
-// and the turn's own events and the status line simply complete.
+// (an Error throws), the model request records the effort it was sent with
+// and answers from `replies`, and the turn's own events and the status line
+// simply complete.
 function world(on: On, answers: Array<string | undefined | Error>) {
   mock.store(on)
   mock.clock(on)
@@ -26,7 +30,7 @@ function world(on: On, answers: Array<string | undefined | Error>) {
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
   on('turn.step', async function* ($, e) {
     seen.sent.push(e.effort)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: replies.shift() ?? '', toolUses: [], stopReason: 'end_turn', usage: null }
   })
   on('turn.complete', async ($, e) => ({ text: e.answer }))
   on('ui.status', async ($, e) => {
@@ -37,8 +41,8 @@ function world(on: On, answers: Array<string | undefined | Error>) {
 }
 
 let ids = 0
-// One turn of `steps` model requests; `between` runs after the request at
-// each index (tool calls arriving mid-turn).
+// One turn of `steps` model requests answering `texts` in turn; `between`
+// runs after the request at each index (tool calls arriving mid-turn).
 async function turn(
   $: Engine,
   text: string,
@@ -46,12 +50,14 @@ async function turn(
     agentId?: string
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | undefined
     answer?: string
+    texts?: string[]
     model?: string
     steps?: number
     between?: (index: number) => Promise<unknown>
   } = {},
 ) {
   const turnId = `t${++ids}`
+  replies.splice(0, replies.length, ...(opts.texts ?? []))
   await $.turn.start({ text, turnId })
   for (let index = 0; index < (opts.steps ?? 1); index++) {
     const stream = $.turn.step({
@@ -242,6 +248,24 @@ describe('effort-router', () => {
     expect(seen.inputs[1]).toContain('[selected] 3: コミットして終了')
     expect(seen.sent).toEqual(['xhigh', 'medium'])
     expect(seen.status.at(-1)).toBe('medium (choice 3)')
+  })
+
+  test('options offered before a tool call count when a closing line ends the turn', async ($, on) => {
+    const seen = world(on, [label('xhigh'), label('medium')])
+    const offer = '設計しました。\n1. 案2で実装を進める\n2. 設計を見直す\n3. コミットして終了'
+    await turn($, LONG, { steps: 2, texts: [offer, '結果が届いたらお知らせします。'], answer: '結果が届いたらお知らせします。' })
+    await turn($, '3')
+    expect(seen.inputs[1]).toContain('[selected] 3: コミットして終了')
+    expect(seen.status.at(-1)).toBe('medium (choice 3)')
+  })
+
+  test('options in the final text win over earlier ones', async ($, on) => {
+    const seen = world(on, [label('xhigh'), label('low')])
+    const early = '手順:\n1. 調べる\n2. 直す\n3. 全体を見直す'
+    const final = '直しました。\n1. コミットする\n2. 続けて直す\n3. 終了する'
+    await turn($, LONG, { steps: 2, texts: [early, final], answer: final })
+    await turn($, '3')
+    expect(seen.inputs[1]).toContain('[selected] 3: 終了する')
   })
 
   test('a short reply to a question is judged against it', async ($, on) => {

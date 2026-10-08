@@ -63,6 +63,9 @@ type Turn = Decision & {
   // `shown` is the effort the status line last showed for it.
   manual: boolean
   shown?: string
+  // The last step text that offered options: a closing line after a tool
+  // call ends the turn's answer without them.
+  offer?: string
 }
 
 const fresh = {
@@ -91,6 +94,13 @@ type LogEntry = {
   toolErrors: number
   durationMs: number
   outputTokens: number | null
+}
+
+// The step's response as is; its text kept on the turn when it offers options.
+async function* answered<C, R extends { answer: string }>(turn: Turn, stream: AsyncGenerator<C, R>): AsyncGenerator<C, R> {
+  const result = yield* stream
+  if (optionsOf(result.answer).length > 0) turn.offer = result.answer
+  return result
 }
 
 export const register: Register = on => {
@@ -249,14 +259,14 @@ export const register: Register = on => {
         turn.shown = set
         show($, isOn, { level: undefined, judged: null, why: 'manual', isSession: false, setTo: set })
       }
-      return yield* next(e)
+      return yield* answered(turn, next(e))
     }
     // A model without effort leaves `effort` absent; it stays absent. A model
     // not routed (isRouted) keeps its own effort.
     const base = e.effort === undefined || !isRouted(e.model) ? null : (turn.level ?? asLevel(e.effort))
     if (base === null) {
       turn.applied = asLevel(e.effort)
-      return yield* next(e)
+      return yield* answered(turn, next(e))
     }
     const level = escalate(base, turn.steps - turn.since, turn.toolErrors - turn.sinceErrors)
     const bumps = rank(level) - rank(base)
@@ -270,9 +280,9 @@ export const register: Register = on => {
     // No judgment and nothing raised: the session's own effort goes as is.
     if (turn.level === undefined && level === base) {
       if (turn.steps === 1) show($, isOn, { ...turn, level, isSession: true })
-      return yield* next(e)
+      return yield* answered(turn, next(e))
     }
-    return yield* next({ ...e, effort: level })
+    return yield* answered(turn, next({ ...e, effort: level }))
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -281,7 +291,8 @@ export const register: Register = on => {
       turns.delete(e.turnId)
       if (current === e.turnId) current = undefined
       const prev = await read($, prevTurn)
-      const options = optionsOf(e.answer)
+      const final = optionsOf(e.answer)
+      const options = final.length > 0 || turn.offer === undefined ? final : optionsOf(turn.offer)
       const signals: TurnSignals = {
         level: turn.applied,
         steps: turn.steps,
