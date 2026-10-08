@@ -5,6 +5,12 @@ import type { On } from 'claude-code'
 
 export const ROOT = 'C:/vn'
 
+// テストの実行環境には setTimeout があるが、mod の型（ES だけ）には無いので、ここで1回だけ宣言する
+declare function setTimeout(callback: () => void, ms: number): unknown
+
+// 実時間で待つ（テストの時計ではなく）。再生の重なりを確かめるときに使う
+export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
 export type RunResult = { exitCode?: number; stdout?: string; stderr?: string }
 export type Agent = { id: string; description: string; type: string; status: 'running' | 'completed' | 'idle' }
 export type Reply = { isAnswered: true; text: string } | { isAnswered: false; reason: 'api-error'; status: number; error: string }
@@ -191,7 +197,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
       playing++
       w.maxPlaying = Math.max(w.maxPlaying, playing)
       try {
-        if (opts.playMs) await new Promise(resolve => setTimeout(resolve, opts.playMs))
+        if (opts.playMs) await delay(opts.playMs)
       } finally {
         playing--
       }

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { DEFAULT_CONFIG, ROOT, world } from './world'
+import { DEFAULT_CONFIG, ROOT, delay, world } from './world'
 import type { World, WorldOptions } from './world'
 
 // summaryMinChars（80）を超える長さにする
@@ -248,7 +248,7 @@ describe('voice-notify', () => {
       $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: {} } as never),
     ])
     for (let i = 0; i < 20; i++) {
-      await new Promise(resolve => setTimeout(resolve, 20))
+      await delay(20)
       await settle(w)
     }
     // メインの前置きと本文、報告、許可待ちの前置きと本文
