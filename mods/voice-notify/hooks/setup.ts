@@ -1,11 +1,13 @@
-// /voice-notify の引数と表示（純粋関数）。実行は register.ts。
-// mod のコマンド名は英数字・_・- だけなので、0.2.0 の /voice-notify:setup・/voice-notify:voice は /voice-notify のサブコマンドにした。
-// 表示は 0.2.0 の setup.ps1 と同じ書式（== 見出し、OK / 注意 / NG の行）。
+// /voice-notify's arguments and what it prints, as pure functions; commands.ts
+// runs them. A mod's command name takes only letters, digits, _ and -, so
+// 0.2.0's /voice-notify:setup and /voice-notify:voice became subcommands.
+// The output keeps 0.2.0's setup.ps1 format (== headings, OK / 注意 / NG lines).
 
+import type { Config } from './config'
 import { voiceFor } from './decide'
-import type { VoiceConfig } from './decide'
 import type { Os } from './os'
 import type { PhraseState } from './phrases'
+import { logBody } from './store'
 import type { FoundEngine } from './voicevox'
 
 export const COMMAND = 'voice-notify'
@@ -23,7 +25,8 @@ export const INSTALL_HINT: Record<Os, string> = {
   linux: '公式サイトの tar.gz を展開し、config.json の enginePath に vv-engine/run の絶対パスを書く',
 }
 
-// 0.2.0 の残り：状態ファイル（mod に移って要らなくなった）と、ホットキー・タスクの古い入口
+// What 0.2.0 left: state files (the mod keeps no such state) and the old
+// entry points of the hotkey and the task.
 export const LEGACY_STATE_DIRS: readonly string[] = ['turns', 'agents', 'summaries']
 export const LEGACY_BIN: readonly string[] = ['launch.ps1', 'plugin-root.txt']
 
@@ -55,7 +58,7 @@ export function unknownArg(args: string): string {
   return `知らない引数です: ${args.trim()}。${USAGE}`
 }
 
-// どの表示からでも同じ言い方で次の操作を案内する
+// Every message names the next step in the same words.
 export const HINT = {
   setup: `${CMD} setup`,
   force: `${CMD} setup force`,
@@ -65,24 +68,25 @@ export const HINT = {
   voice: `${CMD} [on|off|status]`,
 }
 
-export function voiceStatus(cfg: VoiceConfig, os: Os, muted: boolean): string {
-  const label = (n: string) => cfg.speakers?.[n]?.label ?? n
+export function voiceStatus(cfg: Config, os: Os, muted: boolean): string {
+  const label = (n: string) => cfg.speakers[n]?.label ?? n
   return [
     `手動ミュート: ${muted ? 'ON' : 'OFF'}`,
-    `マイク使用中の自動ミュート: ${os === 'windows' && cfg.mute?.whenMicInUse ? '有効' : '無効'}`,
-    `話者: 最終 ${label(voiceFor(cfg, 'final').name)} / 中間 ${label(voiceFor(cfg, 'interim').name)} / 話速: ${cfg.speedScale ?? 1}`,
+    `マイク使用中の自動ミュート: ${os === 'windows' && cfg.mute.whenMicInUse ? '有効' : '無効'}`,
+    `話者: 最終 ${label(voiceFor(cfg, 'final').name)} / 中間 ${label(voiceFor(cfg, 'interim').name)} / 話速: ${cfg.speedScale}`,
     `クレジット: ${creditLine(cfg)}`,
   ].join('\n')
 }
 
-// 音源の規約はアプリでの利用に「少し探せばわかる場所」へのクレジット表記を求める。
-// 使っている話者の speakers.*.credit を並べる。credit の無い話者は VOICEVOX とだけ書く
-export function creditLine(cfg: VoiceConfig): string {
+// The voice library's terms ask an app to credit it where it can be found
+// with a little looking. The credits of the speakers in use (speakers.*.credit);
+// a speaker without one is plain VOICEVOX.
+export function creditLine(cfg: Pick<Config, 'speaker' | 'speakerInterim' | 'speakers'>): string {
   const names = [voiceFor(cfg, 'final').name, voiceFor(cfg, 'interim').name]
-  return [...new Set(names.map(n => cfg.speakers?.[n]?.credit ?? 'VOICEVOX'))].join('、')
+  return [...new Set(names.map(n => cfg.speakers[n]?.credit ?? 'VOICEVOX'))].join('、')
 }
 
-// ENGINE 0.24 から英単語をカタカナで読む
+// ENGINE 0.24 and later read English words in katakana.
 export function hasKanaReading(version: string): boolean {
   const [maj = 0, min = 0] = version.split('.').map(Number)
   return maj > 0 || min >= 24
@@ -92,16 +96,16 @@ export type DoctorFacts = {
   pluginRoot: string
   root: string
   os: Os
-  player: string | null // Linux で見つかったプレイヤー
-  curl: string | null // curl --version の1行目
+  player: string | null // the player found on Linux
+  curl: string | null // the first line of curl --version
   engine: FoundEngine | null
   port: number
   version: string | null
   phrases: PhraseState
-  autostart: string[] // OS ごとの「常駐まわり」の節
+  autostart: string[] // the per-OS section on what starts at logon
   muted: boolean
-  legacy: number // 0.2.0 の残りの件数
-  errors: string[] // 直近200行の ERR の行
+  legacy: number // how many of 0.2.0's leftovers remain
+  errors: string[] // the ERR lines among the last 200
   credit: string // creditLine
 }
 
@@ -126,7 +130,7 @@ export function doctorReport(f: DoctorFacts): string[] {
   out.push(step('状態'))
   out.push(ok(f.muted ? `手動ミュート中（${HINT.unmute} で解除）` : 'ミュートなし'))
   if (f.legacy) out.push(warn(`0.2.0 の残りがある（${f.legacy} 件）。${HINT.setup} で消える`))
-  out.push(f.errors.length ? warn(`直近200行にエラー ${f.errors.length} 件。最後: ${f.errors.at(-1)!.slice(21)}`) : ok('直近200行にエラーなし'))
+  out.push(f.errors.length ? warn(`直近200行にエラー ${f.errors.length} 件。最後: ${logBody(f.errors.at(-1)!)}`) : ok('直近200行にエラーなし'))
   out.push(step('クレジット'), ok(f.credit))
   return out
 }

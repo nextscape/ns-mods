@@ -1,5 +1,5 @@
-# voice-notify が使う VOICEVOX ENGINE をログオン時に起動する
-# （/voice-notify setup が {{…}} を埋めて ~/.config/systemd/user/ に置き、systemctl --user enable --now で有効にする）
+# Starts the VOICEVOX ENGINE voice-notify uses at logon
+# (/voice-notify setup fills in {{…}}, puts it in ~/.config/systemd/user/ and enables it with systemctl --user enable --now)
 [Unit]
 Description=VOICEVOX ENGINE for voice-notify (Claude Code)
 

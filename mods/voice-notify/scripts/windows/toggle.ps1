@@ -1,9 +1,9 @@
 ﻿<#
-ホットキー（Ctrl+Alt+M など）から呼ばれる、ミュートの切り替え。setup が <ホーム>\bin\ にコピーする。
-mod（/voice-notify on・off）と同じく、state\mute があればミュート。止める前と再開した後に知らせる。
+Toggles mute from the hotkey (Ctrl+Alt+M or the like). setup copies it to <home>\bin\.
+As with the mod (/voice-notify on, off), state\mute present means muted. It speaks before muting and after unmuting.
 #>
-# setup がホームの bin\ にコピーして呼ぶので、bin の親がホーム（環境変数より確実。
-# VOICE_NOTIFY_HOME を Claude の設定にだけ書いた利用者でも、ホットキーは同じホームを見る）
+# setup copies it to the home's bin\, so bin's parent is the home (surer than the environment:
+# a VOICE_NOTIFY_HOME set only in Claude's settings still leads the hotkey to the same home)
 $VHome = Split-Path -Parent $PSScriptRoot
 if ((Split-Path -Leaf $PSScriptRoot) -ne "bin" -or -not (Test-Path -LiteralPath (Join-Path $VHome "config.json"))) {
   $VHome = "$env:VOICE_NOTIFY_HOME".Trim().TrimEnd('\', '/')

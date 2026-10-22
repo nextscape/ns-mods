@@ -1,14 +1,18 @@
-// テストのエンジンの下層。$ の各呼び出しを { value } で答える。
-// fs は Map、プロセスは argv を記録して答える、HTTP は ENGINE のふり、モデルは固定の返答。
+// The engine beneath the mod in tests: each $ call answered with { value }.
+// Files live in a Map, processes are recorded and answered by their argv,
+// HTTP plays the engine, and the model gives a fixed reply.
 import { mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { resolveConfig } from '../hooks/config'
+
 export const ROOT = 'C:/vn'
 
-// テストの実行環境には setTimeout があるが、mod の型（ES だけ）には無いので、ここで1回だけ宣言する
+// The test runtime has setTimeout, but the mod's types (ES only) do not:
+// declared here, once.
 declare function setTimeout(callback: () => void, ms: number): unknown
 
-// 実時間で待つ（テストの時計ではなく）。再生の重なりを確かめるときに使う
+// Waits in real time (not on the test clock), to see clips overlap or not.
 export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 export type RunResult = { exitCode?: number; stdout?: string; stderr?: string }
@@ -17,25 +21,25 @@ export type Reply = { isAnswered: true; text: string } | { isAnswered: false; re
 
 export type WorldOptions = {
   os?: 'windows' | 'macos' | 'linux'
-  // ホームの config.json。null で置かない。オブジェクトは JSON にする
+  // The home's config.json: null for none, an object written as JSON.
   config?: Record<string, unknown> | string | null
   files?: Record<string, string>
   engine?: boolean
   agents?: Agent[]
   reply?: Reply
-  // 既定の答えより先に見る。undefined を返せば既定に任せる
+  // Asked before the default answers; undefined leaves it to them.
   run?: (argv: readonly string[]) => RunResult | undefined
   linuxPlayers?: string[]
-  // 起動できない（入っていない）コマンド。$.process.run が reject する
+  // Commands that cannot start (not installed): $.process.run rejects.
   missing?: string[]
-  // fs.exists が例外を出す（読めない場所など）
+  // fs.exists throws (a place that cannot be read).
   existsFails?: boolean
-  // $.model.complete が例外を出す
+  // $.model.complete throws.
   modelThrows?: boolean
-  // 再生にかかる実時間（ミリ秒）。重なりを確かめるとき
+  // How long a clip plays, in real ms, to see clips overlap or not.
   playMs?: number
   now?: number
-  // VOICE_NOTIFY_HOME と OS に足す環境変数
+  // Added to VOICE_NOTIFY_HOME and OS.
   env?: Record<string, string>
 }
 
@@ -46,60 +50,60 @@ export type World = {
   fetches: Array<{ url: string; method: string; body?: string }>
   asks: Array<Record<string, unknown>>
   played: string[]
-  // 同時に鳴っている数の最大
+  // The most clips playing at once.
   maxPlaying: number
-  // 各 process.run の stdin（runs と同じ並び）
+  // Each process.run's stdin, in the order of `runs`.
   inputs: string[]
-  // $.command.register で登録された名前
+  // What $.command.register registered: the names, and each registration.
   commands: string[]
+  registrations: Array<Record<string, unknown>>
   agents: Agent[]
   clock: ReturnType<typeof mock.clock>
 }
 
-// エンジンは fs のパスを Windows の区切り（\）にして渡すことがあるので、比べる前に / にそろえる。
-// また Windows でテストを動かすと、macOS・Linux の絶対パス（/Users/…・/home/… など）にドライブ名が付いて届くので外す
+// The engine may hand fs paths with Windows separators: compared with / only.
+// Run on Windows, a macOS or Linux absolute path (/Users/…, /home/…) arrives
+// with a drive letter, which goes too.
 export const key = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/(Users|home|Applications|opt)\/)/, '')
 
 export const AUDIO_QUERY = { accent_phrases: [], speedScale: 1, pitchScale: 0, intonationScale: 1, prePhonemeLength: 0.1, postPhonemeLength: 0.1 }
 
-export const DEFAULT_CONFIG = {
+// The person's config.json in most tests; what it leaves out runs at its default.
+export const USER_CONFIG = {
   speaker: 'metan',
   speakerInterim: 'zundamon',
   speedScale: 1.3,
-  pitchScale: 0,
-  intonationScale: 1,
-  enginePort: 50021,
   speakers: { metan: { id: 2, label: 'めたん' }, zundamon: { id: 3, label: 'ずんだもん' } },
-  subagent: { debounceSeconds: 8 },
-  speech: {
-    summarize: true,
-    summarizeEvents: ['stop', 'agentstop'],
-    summaryMinChars: 80,
-    summaryMaxChars: 60,
-    interimMaxChars: 30,
-    summaryTimeoutSec: 15,
-    briefMaxSeconds: 30,
-    readings: { FIX: 'フィックス' },
-    lowercaseMinLength: 5,
-  },
+  speech: { readings: { FIX: 'フィックス' } },
   mute: { whenMicInUse: false },
-  cacheMaxFiles: 200,
-  playback: { leadSilenceMs: 600 },
   notification: { toolLabels: { Bash: 'コマンド実行' } },
 }
 
-// プラグインに同梱のファイル（$.plugin.root の下）。パスの末尾で答える
-const SHIPPED: Record<string, string> = {
-  '/config.default.json': JSON.stringify(DEFAULT_CONFIG),
-  '/scripts/macos/voice-notify-engine.plist': '<string>{{LABEL}}</string><string>{{RUN}}</string><string>{{DIR}}</string>',
-  '/scripts/linux/voice-notify-engine.service': 'WorkingDirectory={{DIR}}\nExecStart="{{RUN}}"\n',
+// The settings the mod runs with for USER_CONFIG.
+export const CFG = resolveConfig(USER_CONFIG)
+
+// A config.json with few phrases: 7 per voice, 14 in all. Folders the
+// defaults have and these do not are emptied, or they would lay over them.
+export const PHRASE_USER = {
+  ...USER_CONFIG,
+  phrases: {
+    stop: { done: ['完了しました。', 'できました。'], ask: [], trouble: [], solo: [], interim: [], brief: { done: ['終わりました。'], ask: [], trouble: [], interim: [] } },
+    notification: [],
+    task: [],
+    permission: [],
+    idle: ['入力をお待ちしています。'],
+    failure: [],
+    mute: ['停止します。'],
+    unmute: ['再開します。'],
+  },
 }
 
-// フレーズの少ない設定（2話者 × 7件 = 14件）
-export const PHRASE_CFG = {
-  ...DEFAULT_CONFIG,
-  phrases: { idle: ['入力をお待ちしています。'], stop: { done: ['完了しました。', 'できました。'], brief: { done: ['終わりました。'] } }, mute: ['停止します。'], unmute: ['再開します。'] },
-  subagent: { debounceSeconds: 8, defaultLabel: 'エージェント' },
+export const PHRASE_CFG = resolveConfig(PHRASE_USER)
+
+// The plugin's own files (under $.plugin.root), answered by the end of the path.
+const SHIPPED: Record<string, string> = {
+  '/scripts/macos/voice-notify-engine.plist': '<string>{{LABEL}}</string><string>{{RUN}}</string><string>{{DIR}}</string>',
+  '/scripts/linux/voice-notify-engine.service': 'WorkingDirectory={{DIR}}\nExecStart="{{RUN}}"\n',
 }
 
 export function world(on: On, opts: WorldOptions = {}): World {
@@ -110,20 +114,25 @@ export function world(on: On, opts: WorldOptions = {}): World {
   const files = new Map<string, string>(Object.entries(opts.files ?? {}).map(([k, v]) => [key(k), v]))
   const mtimes = new Map<string, number>()
   if (opts.config !== null) {
-    const c = opts.config ?? DEFAULT_CONFIG
+    const c = opts.config ?? USER_CONFIG
     files.set(`${ROOT}/config.json`, typeof c === 'string' ? c : JSON.stringify(c))
   }
-  const w: World = { files, mtimes, runs: [], fetches: [], asks: [], played: [], maxPlaying: 0, inputs: [], commands: [], agents: opts.agents ?? [], clock }
+  const w: World = { files, mtimes, runs: [], fetches: [], asks: [], played: [], maxPlaying: 0, inputs: [], commands: [], registrations: [], agents: opts.agents ?? [], clock }
   const engine = opts.engine ?? true
   let playing = 0
   const players = opts.linuxPlayers ?? ['pw-play']
   const ok = (r: RunResult = {}) => ({
     value: { exitCode: r.exitCode ?? 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false },
   })
-  // 書いた時刻はテストの時計（mock.clock）で残す。clock.advance で連発抑制などを確かめられる
+  // A write is timed on the test clock, so clock.advance can show the
+  // debounce and the like.
   const put = (path: string, text: string) => {
     files.set(key(path), text)
     mtimes.set(key(path), clock.now())
+  }
+  const move = (from: string | undefined, to: string | undefined) => {
+    if (files.has(from!)) put(to!, files.get(from!)!)
+    files.delete(from!)
   }
 
   on('session.id', async () => ({ value: 'sess-1' }))
@@ -169,8 +178,9 @@ export function world(on: On, opts: WorldOptions = {}): World {
     if (opts.missing?.includes(argv[0]!)) throw new Error(`spawn ${argv[0]} ENOENT`)
     const custom = opts.run?.(argv)
     if (custom) return ok(custom) as never
-    // Windows では curl.exe / powershell.exe と書く。.exe を外して比べる
+    // Windows names curl.exe and powershell.exe: compared without .exe.
     const cmd = argv[0]!.replace(/\.exe$/i, '')
+    const script = cmd === 'powershell' ? (argv.at(-1) ?? '').replace(/^.*[\\/]/, '') : ''
     if (cmd === 'uname') return ok({ stdout: os === 'macos' ? 'Darwin\n' : 'Linux\n' }) as never
     if (cmd === 'sh' && argv[2]?.startsWith('command -v ')) {
       const name = argv[2].slice('command -v '.length).trim()
@@ -182,16 +192,28 @@ export function world(on: On, opts: WorldOptions = {}): World {
       put(argv[argv.indexOf('-o') + 1]!, 'RIFF-fake-wav')
       return ok() as never
     }
-    // rm -f -- <paths> / remove.ps1（パスは stdin で1行ずつ）
+    // mv -f -- <from> <to>, or move.ps1 with the two paths on stdin.
+    if (cmd === 'mv') {
+      const [from, to] = argv.slice(3).map(key)
+      move(from, to)
+      return ok() as never
+    }
+    if (script === 'move.ps1') {
+      const [from, to] = (e.init?.stdin ?? '').split('\n').map(key)
+      move(from, to)
+      return ok() as never
+    }
+    // rm -f -- <paths>, or remove.ps1 with the paths on stdin, one per line.
     if (cmd === 'rm') {
       for (const a of argv.slice(3)) files.delete(key(a))
       return ok() as never
     }
-    if (cmd === 'powershell' && argv.at(-1)!.endsWith('remove.ps1')) {
+    if (script === 'remove.ps1') {
       for (const a of (e.init?.stdin ?? '').split('\n')) if (a) files.delete(key(a))
       return ok() as never
     }
-    // 再生（Windows は powershell、macOS は afplay、Linux は sh の再生スクリプト）。どれも argv の最後が wav
+    // Playing (Windows: powershell, macOS: afplay, Linux: the sh script): the
+    // wav is always argv's last.
     if (cmd === 'powershell' || cmd === 'afplay' || cmd === 'sh') {
       w.played.push(key(argv[argv.length - 1]!))
       playing++
@@ -213,7 +235,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     return { value: { status: 200, ok: true, headers: {}, text } } as never
   })
   on('agent.list', async () => ({ value: w.agents }) as never)
-  // エンジンの役（プラグインの hook が next(e) で呼ぶ先）
+  // The engine's own part (what the mod's hooks reach with next(e)).
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', async ($, e) => ({ text: e.answer }))
   on('classic.PermissionRequest', async () => ({}) as never)
@@ -222,6 +244,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('command.register', async ($, e) => {
     w.commands.push(e.name)
+    w.registrations.push(e as unknown as Record<string, unknown>)
     return { value: { command: e.name } } as never
   })
   on('model.complete', async ($, e) => {

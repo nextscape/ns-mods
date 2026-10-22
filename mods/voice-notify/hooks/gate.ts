@@ -1,5 +1,5 @@
-// 同じセッションの中で、非同期の処理を1つずつ通す関門（$ に触れない）。
-// enter が返す関数を呼ぶと次が通る。
+// Letting async work through one at a time within a session (no $ here).
+// Calling the function enter() resolves to lets the next one through.
 export class Gate {
   private tail: Promise<void> = Promise.resolve()
 
@@ -15,7 +15,8 @@ export class Gate {
 
 export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
 
-// 先に始めて後で待つ処理の結果を、始めた時点で受け止める（待つまでの間に失敗しても、未処理の例外にならない）
+// Holds the outcome of work started now and awaited later, so a failure in
+// between is not an unhandled rejection.
 export function capture<T>(work: Promise<T>): Promise<Settled<T>> {
   return work.then(
     value => ({ ok: true as const, value }),

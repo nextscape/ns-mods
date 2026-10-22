@@ -1,8 +1,10 @@
 #!/bin/sh
-# voice-notify の再生（macOS・Linux）。mod（hooks/register.ts）が呼ぶ。
-#   play.sh <ロック用のディレクトリ> <再生コマンド> <wav>
-# 別のセッションの再生と重なると聞き取れないので、mkdir で作れた側だけが鳴らす（mkdir は同時に呼んでも1つしか成功しない）。
-# 20秒待っても空かなければ重ねて鳴らす。1分を超えて残ったロックは、落ちたプロセスの残りとみなして消す。
+# Plays a wav for voice-notify (macOS, Linux). The mod (hooks/speak.ts) calls it:
+#   play.sh <lock directory> <player> <wav>
+# Clips of two sessions at once cannot be made out, so only the one that makes
+# the lock directory plays (of mkdir calls made together, one succeeds).
+# When the lock is not free after 20 seconds, the clip plays over the other. A
+# lock left for over a minute is taken for a dead process's and removed.
 lock=$1
 player=$2
 wav=$3
@@ -10,7 +12,8 @@ held=0
 i=0
 while [ "$i" -lt 200 ]; do
   if mkdir "$lock" 2>/dev/null; then held=1; break; fi
-  # 古いロックは消して、すぐ取り直す（確かめるのは1秒に1回）。消せない（中にファイルがあるなど）ときは、ふつうに待ち続ける
+  # A stale lock is removed and taken again at once (checked once a second).
+  # One that cannot be removed (a file inside, say) is simply waited on.
   if [ $((i % 10)) -eq 0 ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$lock" 2>/dev/null; then continue; fi
   sleep 0.1
   i=$((i + 1))

@@ -1,45 +1,10 @@
-// 何を読むかの判定。$ に触れない純粋関数だけを置く（単体テストの対象）。
-// 0.2.0 の notify.ps1 の判断（ケース・brief・中間報告・フレーズ・サブエージェントの文）と、要約 mod の判定を1つにした。
+// What to say, as pure functions (unit-tested directly): the stop case, the
+// brief and interim reports, the phrase folders, the subagent sentence (from
+// 0.2.0's notify.ps1), and when to summarize (from the summary mod).
 
+import type { Config, SpeechConfig } from './config'
 import { pickSentence, stopCase } from './text'
 import type { StopCase } from './text'
-
-export type SpeechConfig = {
-  summarize?: boolean
-  summarizeEvents?: string[]
-  summaryModel?: string
-  summaryMinChars?: number
-  summaryMaxChars?: number
-  interimMaxChars?: number
-  interimPrompt?: string[]
-  summaryPrompt?: string[]
-  summaryTimeoutSec?: number
-  briefMaxSeconds?: number
-  shortSentenceChars?: number
-  maxTwoSentenceChars?: number
-  readings?: Record<string, string>
-  lowercaseMinLength?: number
-  keepUppercase?: string[]
-}
-
-export type VoiceConfig = {
-  speaker?: string
-  speakerInterim?: string
-  speedScale?: number
-  pitchScale?: number
-  intonationScale?: number
-  enginePort?: number
-  enginePath?: string
-  hotKey?: string
-  speakers?: Record<string, { id: number; label?: string; credit?: string }>
-  phrases?: Record<string, unknown>
-  subagent?: { debounceSeconds?: number; defaultLabel?: string }
-  speech?: SpeechConfig
-  mute?: { whenMicInUse?: boolean }
-  cacheMaxFiles?: number
-  playback?: { leadSilenceMs?: number }
-  notification?: { toolLabels?: Record<string, string> }
-}
 
 export type Role = 'final' | 'interim'
 export type Voice = { name: string; id: number }
@@ -47,25 +12,20 @@ export type Voice = { name: string; id: number }
 export const DEFAULT_PROMPT =
   '次に示すのは Claude Code の応答本文です。音声読み上げ用の日本語1文に要約してください。要約文だけを出力してください。'
 
-// 中間報告（サブエージェントの報告と、サブエージェントを待ったまま終えた応答）は声を変える
-export function voiceFor(cfg: VoiceConfig, role: Role): Voice {
-  const speakers = cfg.speakers ?? {}
-  const final = cfg.speaker ?? 'metan'
-  const want = role === 'interim' && cfg.speakerInterim && speakers[cfg.speakerInterim] ? cfg.speakerInterim : final
-  return { name: want, id: speakers[want]?.id ?? 2 }
+// Interim reports (a subagent's report, an answer that ends while subagents
+// still run) take the other voice, when it is defined.
+export function voiceFor(cfg: Pick<Config, 'speaker' | 'speakerInterim' | 'speakers'>, role: Role): Voice {
+  const interim = role === 'interim' && cfg.speakerInterim && cfg.speakers[cfg.speakerInterim] ? cfg.speakerInterim : null
+  const name = interim ?? cfg.speaker
+  return { name, id: cfg.speakers[name]!.id }
 }
 
-export function enginePort(cfg: VoiceConfig): number {
-  return cfg.enginePort ?? 50021
+// One or two sentences from the answer to read.
+export function pickFor(cfg: Config, text: string): string | null {
+  return pickSentence(text, { shortMax: cfg.speech.shortSentenceChars, twoMax: cfg.speech.maxTwoSentenceChars })
 }
 
-// 本文から読む1〜2文
-export function pickFor(cfg: VoiceConfig, text: string): string | null {
-  const sp = cfg.speech ?? {}
-  return pickSentence(text, { shortMax: sp.shortSentenceChars, twoMax: sp.maxTwoSentenceChars })
-}
-
-export type StopInput = { cfg: VoiceConfig; answer: string; durationMs: number; running: number; engineAlive: boolean }
+export type StopInput = { cfg: Config; answer: string; durationMs: number; running: number; engineAlive: boolean }
 export type StopPlan = {
   role: Role
   case: StopCase | 'solo'
@@ -76,39 +36,52 @@ export type StopPlan = {
 }
 
 export function planStop(i: StopInput): StopPlan {
-  const sp = i.cfg.speech ?? {}
   const role: Role = i.running > 0 ? 'interim' : 'final'
   const readable = !!pickFor(i.cfg, i.answer)
   const kase: StopCase | 'solo' = readable && i.engineAlive ? stopCase(i.answer) : 'solo'
-  // 中間報告で「完了しました」と言わないよう、done / solo は interim に差し替える。ask / trouble はそのまま伝える
+  // An interim report must not say it is done: done and solo become interim.
+  // ask and trouble still say what they are.
   const pcase = role === 'interim' && (kase === 'done' || kase === 'solo') ? 'interim' : kase
-  // 作業が短いターンは完了を告げるだけにする（本文は読まない）。ask / trouble の別は残す
-  const brief = kase !== 'solo' && i.durationMs <= (sp.briefMaxSeconds ?? 30) * 1000
+  // A short turn only says it finished (no body), keeping ask and trouble apart.
+  const brief = kase !== 'solo' && i.durationMs <= i.cfg.speech.briefMaxSeconds * 1000
   let first: string
   if (brief) first = `stop/brief/${pcase}`
   else if (kase === 'solo' && pcase === 'interim') first = 'stop/brief/interim'
   else first = `stop/${pcase}`
-  // フレーズが無いときの代わり（0.2.0 の notify.ps1 と同じ順）
+  // Where a folder has no phrase, the next stands in (the order 0.2.0's
+  // notify.ps1 used).
   const chain = [first, ...(first.startsWith('stop/brief/') ? [`stop/${pcase}`] : []), `stop/${kase}`, 'stop']
   return { role, case: kase, pcase, brief, phrases: [...new Set(chain)], read: !brief && kase !== 'solo' }
+}
+
+// What Haiku is sent of an answer: a long one only by its head and tail
+// (where the point and the conclusion sit), to bound the cost and the wait.
+const SUMMARY_HEAD_CHARS = 3000
+const SUMMARY_TAIL_CHARS = 1000
+
+export function summaryInput(answer: string): string {
+  if (answer.length <= SUMMARY_HEAD_CHARS + SUMMARY_TAIL_CHARS) return answer
+  return `${answer.slice(0, SUMMARY_HEAD_CHARS)}\n…（中略）…\n${answer.slice(-SUMMARY_TAIL_CHARS)}`
 }
 
 export type SummaryPlan = { skip: 'disabled' | 'event' | 'short' } | { skip: null; maxChars: number; system: string }
 
 export function planSummary(speech: SpeechConfig, event: 'stop' | 'agentstop', role: Role, answer: string): SummaryPlan {
   if (!speech.summarize) return { skip: 'disabled' }
-  if (speech.summarizeEvents && !speech.summarizeEvents.includes(event)) return { skip: 'event' }
-  // 途中経過は上限＝下限（上限より短い報告は要約しても縮まらない）
-  const interim = role === 'interim' && !!speech.interimMaxChars
-  const maxChars = interim ? (speech.interimMaxChars as number) : (speech.summaryMaxChars ?? 60)
-  const minChars = interim ? (speech.interimMaxChars as number) : (speech.summaryMinChars ?? 0)
+  if (!speech.summarizeEvents.includes(event)) return { skip: 'event' }
+  // An interim report's cap is also its floor: a report already shorter
+  // would not get shorter by summarizing. 0 turns the interim cap off.
+  const interim = role === 'interim' && speech.interimMaxChars > 0
+  const maxChars = interim ? speech.interimMaxChars : speech.summaryMaxChars
+  const minChars = interim ? speech.interimMaxChars : speech.summaryMinChars
   if (answer.length < minChars) return { skip: 'short' }
-  const lines = speech.summaryPrompt && speech.summaryPrompt.length ? [...speech.summaryPrompt] : [DEFAULT_PROMPT]
-  if (role === 'interim' && speech.interimPrompt && speech.interimPrompt.length) lines.push(...speech.interimPrompt)
+  const lines = speech.summaryPrompt.length > 0 ? [...speech.summaryPrompt] : [DEFAULT_PROMPT]
+  if (role === 'interim') lines.push(...speech.interimPrompt)
   return { skip: null, maxChars, system: lines.join('\n').split('{maxChars}').join(String(maxChars)) }
 }
 
-// 「<説明>が完了しました。<報告>」。報告の頭30文字が既に「完了」を言っていれば繰り返さない
+// "<description>が完了しました。<report>", without saying done twice when the
+// report's first 30 characters already do.
 export function agentText(desc: string | null, report: string | null): string | null {
   const dupe = !!report && /完了|終わ|できました/.test(report.slice(0, 30))
   if (desc && report && dupe) return `${desc}。${report}`
@@ -117,21 +90,23 @@ export function agentText(desc: string | null, report: string | null): string | 
   return report || null
 }
 
-// 要約が無いときの抜き出し。報告はコミットID・ファイル一覧が続きやすく、長いものは読まずに説明だけにする
+// The report read when there is no summary. Reports tend to run on into
+// commit ids and file lists, so a long one is dropped and the description
+// stands alone.
 export function agentReportFallback(pick: string | null, speech: SpeechConfig): string | null {
   if (!pick) return null
-  const max = speech.interimMaxChars ?? speech.summaryMaxChars ?? 60
-  const min = speech.interimMaxChars ?? speech.summaryMinChars ?? 0
-  return pick.length > Math.max(max, min) + 1 ? null : pick
+  const cap = speech.interimMaxChars > 0 ? speech.interimMaxChars : Math.max(speech.summaryMaxChars, speech.summaryMinChars)
+  return pick.length > cap + 1 ? null : pick
 }
 
-export function permissionText(cfg: VoiceConfig, toolName: string): string {
-  return `${cfg.notification?.toolLabels?.[toolName] ?? toolName}の許可待ちです。`
+export function permissionText(cfg: Config, toolName: string): string {
+  return `${cfg.notification.toolLabels[toolName] ?? toolName}の許可待ちです。`
 }
 
 export type NoticeKind = 'idle' | 'permission' | 'notification'
 
-// permission_prompt は classic.PermissionRequest（ツール名付き）で読むので、ここでは扱わない
+// permission_prompt is read from classic.PermissionRequest, which names the
+// tool, so it is not handled here.
 export function noticeKind(notificationType: string): NoticeKind | null {
   if (notificationType === 'idle_prompt') return 'idle'
   if (/^(elicitation_dialog|elicitation_url_dialog|agent_needs_input)$/.test(notificationType)) return 'permission'
@@ -139,43 +114,11 @@ export function noticeKind(notificationType: string): NoticeKind | null {
   return null
 }
 
-// 直前と同じものを選ばない（「完了しました」の3連発を防ぐ）。random は [0, 1)
+// Never the previous pick unless it is the only one (no "完了しました" three
+// times running). `random` is in [0, 1).
 export function choosePhrase(files: string[], prev: string | null, random: number): string | null {
   if (files.length === 0) return null
   const pool = files.filter(f => f !== prev)
   const from = pool.length ? pool : files
   return from[Math.min(from.length - 1, Math.floor(random * from.length))]!
-}
-
-const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
-
-// 設定と状態の置き場所（ホーム）。VOICE_NOTIFY_HOME、無ければ ~/.claude/voice-notify
-export function voiceHome(envHome: string | undefined, userProfile: string | undefined, home: string | undefined): string | null {
-  if (envHome && envHome.trim()) return norm(envHome.trim())
-  const base = (userProfile && userProfile.trim()) || (home && home.trim())
-  return base ? `${norm(base)}/.claude/voice-notify` : null
-}
-
-function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
-}
-
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
-
-// 正しい JSON でも、オブジェクトでなければ（null・配列など）壊れた設定として扱う
-export function parseConfig(text: string): VoiceConfig {
-  const v: unknown = JSON.parse(stripBom(text))
-  if (!isObject(v)) throw new Error('config.json の中身がオブジェクトではない')
-  return v as VoiceConfig
-}
-
-// 同梱の既定の設定に、利用者の設定を重ねる。オブジェクトはキーごとに重ね、配列と値は利用者のものを使う
-// （0.2.0 からの config.json に無いキーも、既定値で動く）
-export function mergeConfig(defaults: Record<string, unknown>, user: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...defaults }
-  for (const [k, v] of Object.entries(user)) {
-    const d = defaults[k]
-    out[k] = isObject(d) && isObject(v) ? mergeConfig(d, v) : v
-  }
-  return out
 }

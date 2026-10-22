@@ -1,12 +1,12 @@
 ﻿<#
-VOICEVOX ENGINE を必要なときだけ起動する。
-  ログオン時: タスクが <ホーム>\bin\start-engine.ps1 -Quiet を呼ぶ。ENGINE の場所は同じフォルダの engine-path.txt（setup が書く）
-  setup の中: mod が -EnginePath <run.exe> を付けて呼ぶ
-すでに応答していれば何もしないので、何度実行してもよい。GUI ではなく vv-engine\run.exe を直接起動する（常駐メモリが小さい）。
+Starts the VOICEVOX ENGINE when it is not running.
+  At logon: the task runs <home>\bin\start-engine.ps1 -Quiet; where the ENGINE is comes from engine-path.txt beside it (setup writes it)
+  In setup: the mod runs it with -EnginePath <run.exe>
+It does nothing when the ENGINE already answers, so it may run any number of times. It starts vv-engine\run.exe, not the GUI (less memory held).
 #>
 param([string]$EnginePath = "", [switch]$Quiet)
 
-# ログオン時はホームの bin\ から呼ばれるので、bin の親がホーム（環境変数より確実）。setup の中ではプラグインから呼ばれ、環境変数で決める
+# At logon it runs from the home's bin\, so bin's parent is the home (surer than the environment). In setup it runs from the plugin, and the environment decides
 $VHome = Split-Path -Parent $PSScriptRoot
 if ((Split-Path -Leaf $PSScriptRoot) -ne "bin" -or -not (Test-Path -LiteralPath (Join-Path $VHome "config.json"))) {
   $VHome = "$env:VOICE_NOTIFY_HOME".Trim().TrimEnd('\', '/')
@@ -40,7 +40,7 @@ if (-not $EnginePath -or -not (Test-Path -LiteralPath $EnginePath)) {
 
 Say "INFO" "ENGINE を起動する: $EnginePath"
 Start-Process -FilePath $EnginePath -WorkingDirectory (Split-Path -Parent $EnginePath) -WindowStyle Hidden
-# 初回はモデル読み込みで十数秒かかる
+# The first start loads the models, which takes some ten seconds
 for ($i = 0; $i -lt 60; $i++) {
   Start-Sleep -Seconds 1
   if (Test-Engine) { Say "INFO" ("ENGINE 起動完了 ({0}秒)" -f ($i + 1)); exit 0 }

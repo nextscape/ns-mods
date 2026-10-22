@@ -1,17 +1,16 @@
-// 再生コマンドの形。OS ごとの再生を、排他つきの小さなスクリプト（scripts/windows/play.ps1・scripts/posix/play.sh）経由で呼ぶ。
-// 実行は register.ts。$.audio.play は macOS 以外では鳴らない（型定義の説明）ので使わない。
+// How a wav is played on each OS: through a small script that plays one clip
+// at a time across sessions (scripts/windows/play.ps1, scripts/posix/play.sh).
+// register.ts runs it. $.audio.play is not used: it plays nothing outside
+// macOS (its doc in the types).
 
+import { psArgv, winPath } from './os'
 import type { Os } from './os'
 
 export const LINUX_PLAYERS: readonly string[] = ['pw-play', 'paplay', 'aplay']
 
-const win = (p: string) => p.replace(/\//g, '\\')
-
-// どれも wav を最後に渡す。Linux でプレイヤーが見つかっていなければ null
+// The wav goes last on every OS. Null on Linux when no player was found.
 export function playArgv(os: Os, pluginRoot: string, root: string, linuxPlayer: string | null, wav: string): string[] | null {
-  if (os === 'windows') {
-    return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', win(`${pluginRoot}/scripts/windows/play.ps1`), win(wav)]
-  }
+  if (os === 'windows') return psArgv(pluginRoot, 'play.ps1', [winPath(wav)])
   const player = os === 'macos' ? 'afplay' : linuxPlayer
   if (!player) return null
   return ['sh', `${pluginRoot}/scripts/posix/play.sh`, `${root}/state/playback.lock`, player, wav]

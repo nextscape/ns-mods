@@ -13,16 +13,15 @@ import {
   synthParams,
   tuneQuery,
 } from '../hooks/voicevox'
-import { AUDIO_QUERY, DEFAULT_CONFIG, ROOT } from './world'
+import { AUDIO_QUERY, CFG, ROOT } from './world'
 
-const P = synthParams(DEFAULT_CONFIG, voiceFor(DEFAULT_CONFIG, 'final'), ROOT, 'windows')
+const P = synthParams(CFG, voiceFor(CFG, 'final'), ROOT, 'windows')
 
 describe('voicevox', () => {
-  test('synthParams reads the config with defaults', () => {
+  test('synthParams reads the voice settings from the config', () => {
     expect(P).toEqual({ root: ROOT, os: 'windows', port: 50021, speakerId: 2, speed: 1.3, pitch: 0, intonation: 1, leadMs: 600 })
-    expect(synthParams({}, { name: 'metan', id: 2 }, ROOT, 'linux')).toEqual({
-      root: ROOT, os: 'linux', port: 50021, speakerId: 2, speed: 1, pitch: 0, intonation: 1, leadMs: 600,
-    })
+    const linux = synthParams({ ...CFG, enginePort: 50121, playback: { leadSilenceMs: 0 } }, { name: 'zundamon', id: 3 }, ROOT, 'linux')
+    expect(linux).toMatchObject({ os: 'linux', port: 50121, speakerId: 3, leadMs: 0 })
   })
 
   test('tuneQuery sets the voice and adds the lead silence to prePhonemeLength', () => {
@@ -89,7 +88,7 @@ describe('voicevox', () => {
       '/opt/voicevox/vv-engine/run',
       '/home/u/.local/share/voicevox/vv-engine/run',
     ])
-    // 場所の手がかりが無ければ、その候補は出さない
+    // With no clue to where it is, no candidate for it.
     expect(engineCandidates('windows', {}, [])).toEqual([])
     expect(engineCandidates('linux', {}, [])).toEqual(['/opt/voicevox/vv-engine/run'])
   })

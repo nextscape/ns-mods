@@ -1,8 +1,8 @@
 ﻿<#
-voice-notify の再生（Windows）。mod（hooks/register.ts）が wav のパスを渡して呼ぶ。ホットキーの toggle.ps1 も使う。
+Plays a wav for voice-notify (Windows). The mod (hooks/speak.ts) calls it with the wav's path; the hotkey's toggle.ps1 uses it too.
 
-別のセッションの再生と重なると聞き取れないので、名前付き Mutex で1つずつ鳴らす。
-20秒待っても空かなければ、重ねて鳴らす（黙るよりよい）。
+Clips of two sessions at once cannot be made out, so a named Mutex plays them one at a time.
+When it is not free after 20 seconds, the clip plays over the other (better than silence).
 #>
 param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -11,7 +11,7 @@ $held = $false
 try { $mx = New-Object Threading.Mutex($false, "voice-notify-playback") } catch { }
 if ($mx) {
   try { $held = $mx.WaitOne(20000) }
-  catch [Threading.AbandonedMutexException] { $held = $true }   # 前の保持者が異常終了。所有権は得ている
+  catch [Threading.AbandonedMutexException] { $held = $true }   # The last holder died; the Mutex is ours now
   catch { $held = $false }
 }
 try {

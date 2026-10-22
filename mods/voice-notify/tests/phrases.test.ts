@@ -4,13 +4,13 @@ import { jobsStamp, phraseBusy, phraseJobs } from '../hooks/phrases'
 import { PHRASE_CFG, ROOT } from './world'
 
 describe('phrases', () => {
-  test('phraseJobs walks the phrase tree per speaker, numbering two digits, plus the agent fallback', () => {
+  test('phraseJobs walks the phrase tree per voice, numbering two digits, plus the agent fallback', () => {
     const jobs = phraseJobs(PHRASE_CFG, ROOT).filter(j => j.speaker === 'metan')
     expect(jobs.map(j => [j.path.replace(`${ROOT}/phrases/metan/`, ''), j.text])).toEqual([
-      ['idle/01.wav', '入力をお待ちしています。'],
       ['stop/done/01.wav', '完了しました。'],
       ['stop/done/02.wav', 'できました。'],
       ['stop/brief/done/01.wav', '終わりました。'],
+      ['idle/01.wav', '入力をお待ちしています。'],
       ['mute/01.wav', '停止します。'],
       ['unmute/01.wav', '再開します。'],
       ['agent/_default/01.wav', 'エージェントが完了しました。'],
@@ -18,8 +18,15 @@ describe('phrases', () => {
     expect(phraseJobs(PHRASE_CFG, ROOT).filter(j => j.speaker === 'zundamon')).toHaveLength(7)
   })
 
+  test('phrases are made only for the voices in use', () => {
+    const cfg = { ...PHRASE_CFG, speakers: { ...PHRASE_CFG.speakers, tsumugi: { id: 8 } } }
+    expect([...new Set(phraseJobs(cfg, ROOT).map(j => j.speaker))]).toEqual(['metan', 'zundamon'])
+    const solo = { ...cfg, speakerInterim: '' }
+    expect([...new Set(phraseJobs(solo, ROOT).map(j => j.speaker))]).toEqual(['metan'])
+  })
+
   test('every phrase is a NN.wav inside the folder the player looks in', () => {
-    // 再生は phrases/<speaker>/<name>/ のフォルダから選ぶ（register.ts の pickPhrase）
+    // Playing picks from phrases/<speaker>/<name>/ (speak.ts's pickPhrase).
     for (const j of phraseJobs(PHRASE_CFG, ROOT)) expect(j.path).toMatch(/\/phrases\/[^/]+\/.+\/\d{2}\.wav$/)
   })
 

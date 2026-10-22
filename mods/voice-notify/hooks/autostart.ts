@@ -1,28 +1,29 @@
-// ログオン時の ENGINE 起動（Windows はタスク、macOS は launchd、Linux は systemd のユーザーサービス）と、
-// ホットキー（Windows だけ）の形（純粋関数）。実行は register.ts。
+// Starting the engine at logon (Windows: a scheduled task; macOS: launchd;
+// Linux: a systemd user service) and the hotkey (Windows only), as pure
+// functions; commands.ts runs them.
 
+import { psArgv, winPath } from './os'
 import { ng, ok, warn } from './setup'
 
 export const LAUNCHD_LABEL = 'jp.nextscape.voice-notify.engine'
 export const SYSTEMD_UNIT = 'voice-notify-engine.service'
 
-const win = (p: string) => p.replace(/\//g, '\\')
-
 export function xml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-// systemd の unit の値。% は指定子（%h など）として読まれるので %% にする
+// A value in a systemd unit: % starts a specifier (%h and so on), so it doubles.
 export function systemdValue(s: string): string {
   return s.replace(/%/g, '%%')
 }
 
-// ひな形の {{KEY}} を置き換える。値は書式に合わせて escape する（plist は xml、systemd の unit は systemdValue）
+// Fills each {{KEY}} of a template, escaping the value for the file's format
+// (xml for the plist, systemdValue for the unit).
 export function fillTemplate(template: string, values: Record<string, string>, escape: (s: string) => string): string {
   return template.replace(/\{\{(\w+)\}\}/g, (all, k: string) => (k in values ? escape(values[k]!) : all))
 }
 
-// install.ps1 の「OK / WARN / NG <文>」を setup の書式に直す
+// install.ps1's "OK / WARN / NG <text>" lines in the setup format.
 export function fromScript(stdout: string): string[] {
   return stdout.split(/\r?\n/).filter(Boolean).map(l => {
     const m = /^(OK|WARN|NG) (.*)$/.exec(l)
@@ -32,12 +33,12 @@ export function fromScript(stdout: string): string[] {
 }
 
 export function installScriptArgv(pluginRoot: string, args: readonly string[]): string[] {
-  return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', win(`${pluginRoot}/scripts/windows/install.ps1`), ...args]
+  return psArgv(pluginRoot, 'install.ps1', args)
 }
 
-// ENGINE の場所が分からない（外部の ENGINE）ときは、タスクを登録しない
+// With no known engine path (an engine run elsewhere), no task is registered.
 export function windowsInstallArgs(root: string, hotKey: string, enginePath: string | null): string[] {
-  return ['-Action', 'install', '-VHome', win(root), '-HotKey', hotKey, ...(enginePath ? ['-EnginePath', win(enginePath)] : [])]
+  return ['-Action', 'install', '-VHome', winPath(root), '-HotKey', hotKey, ...(enginePath ? ['-EnginePath', winPath(enginePath)] : [])]
 }
 
 export function plistPath(home: string): string {

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- voice-notify が使う VOICEVOX ENGINE をログオン時に起動する（/voice-notify setup が {{…}} を埋めて ~/Library/LaunchAgents/ に置く） -->
+<!-- Starts the VOICEVOX ENGINE voice-notify uses at logon (/voice-notify setup fills in {{…}} and puts it in ~/Library/LaunchAgents/) -->
 <plist version="1.0">
 <dict>
   <key>Label</key>

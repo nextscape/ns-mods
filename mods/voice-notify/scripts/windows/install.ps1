@@ -1,9 +1,9 @@
 ﻿<#
-タスク（ログオン時に ENGINE を起動）とホットキー（ミュート切替）の登録・撤去・状態。mod（hooks/register.ts）が呼ぶ。
-  install.ps1 -Action install -VHome <ホーム> -HotKey <CTRL+ALT+M> [-EnginePath <run.exe>]   EnginePath が無ければタスクは登録しない（外部の ENGINE）
+Registers, removes and reports the task (starts the ENGINE at logon) and the hotkey (toggles mute). The mod (hooks/commands.ts) calls it.
+  install.ps1 -Action install -VHome <home> -HotKey <CTRL+ALT+M> [-EnginePath <run.exe>]   no EnginePath: no task (the ENGINE runs elsewhere)
   install.ps1 -Action remove
-  install.ps1 -Action status -VHome <ホーム>
-出力は1行ずつ「OK <文>」「WARN <文>」「NG <文>」。
+  install.ps1 -Action status -VHome <home>
+Prints one line each: "OK <text>", "WARN <text>", "NG <text>" (the text is shown to the person, in Japanese).
 #>
 param(
   [ValidateSet("install", "remove", "status")][string]$Action = "status",
@@ -11,14 +11,14 @@ param(
   [string]$HotKey = "CTRL+ALT+M",
   [string]$EnginePath = ""
 )
-# mod は出力を UTF-8 として読むので、日本語が化けないよう固定する
+# The mod reads the output as UTF-8: write it so, or the Japanese comes out garbled
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
-# 0.2.0 の setup.ps1 と同じ名前（0.2.0 で登録したものを上書き・撤去できるように）
+# The names 0.2.0's setup.ps1 used, so what 0.2.0 registered is replaced or removed too
 $TaskName = "VOICEVOX ENGINE (voice-notify)"
 $LinkPath = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\voice-notify ミュート切替.lnk"
 if (-not $VHome) { $VHome = Join-Path $env:USERPROFILE ".claude\voice-notify" }
 $BinDir = Join-Path $VHome "bin"
-# タスクとショートカットが呼ぶもの。ホームに置くので、プラグインの更新で場所が変わっても動く
+# What the task and the shortcut run. They live in the home, so they keep working when a plugin update moves the plugin
 $Copies = @("start-engine.ps1", "toggle.ps1", "play.ps1")
 
 function Test-Stale {
@@ -52,7 +52,7 @@ foreach ($f in $Copies) { Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $Bin
 
 if ($EnginePath) {
   [IO.File]::WriteAllText((Join-Path $BinDir "engine-path.txt"), $EnginePath, (New-Object Text.UTF8Encoding $false))
-  # run.exe を直接起動するとコンソール窓が残るので、PowerShell を隠して噛ませる
+  # run.exe started directly leaves a console window open: a hidden PowerShell starts it instead
   $action = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument ("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"{0}`" -Quiet" -f (Join-Path $BinDir "start-engine.ps1"))
   $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
@@ -67,7 +67,7 @@ if ($EnginePath) {
   "OK 外部の ENGINE を使うので、ログオン時の起動は登録しません"
 }
 
-# Windows のショートカットに割り当てたキーはグローバルに効くので、どのウィンドウからでも黙らせられる
+# A key given to a Windows shortcut works globally, so it mutes from any window
 $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($LinkPath)
 $sc.TargetPath       = "powershell.exe"
 $sc.Arguments        = ("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"{0}`"" -f (Join-Path $BinDir "toggle.ps1"))

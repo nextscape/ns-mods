@@ -1,46 +1,38 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { DEFAULT_CONFIG } from '../hooks/config'
 import { cleanSummary, clearSpeech, convertReading, pickSentence, stopCase } from '../hooks/text'
 
-// config.default.json の speech.readings / lowercaseMinLength / keepUppercase と同じ値
-const READING = {
-  readings: {
-    FIX: 'フィックス', TASK: 'タスク', DONE: 'ダン', STATUS: 'ステータス', NOTE: 'ノート', PASS: 'パス',
-    FAIL: 'フェイル', TODO: 'トゥードゥー', README: 'リードミー', npm: 'エヌピーエム', pnpm: 'ピーエヌピーエム',
-    npx: 'エヌピーエックス', tsc: 'ティーエスシー', json: 'ジェイソン', css: 'シーエスエス', url: 'ユーアールエル',
-    cli: 'シーエルアイ', sdk: 'エスディーケー', api: 'エーピーアイ', jsx: 'ジェイエスエックス', tsx: 'ティーエスエックス',
-    mcp: 'エムシーピー', llm: 'エルエルエム', utf: 'ユーティーエフ',
-  },
-  lowercaseMinLength: 5,
-  keepUppercase: ['HTTPS', 'DPAPI'],
-}
+// The shipped readings and sentence limits.
+const READING = DEFAULT_CONFIG.speech
+const pick = (text: string) => pickSentence(text, { shortMax: READING.shortSentenceChars, twoMax: READING.maxTwoSentenceChars })
 
 describe('text', () => {
-  // 0.2.0 tests/test-sentence-rule.ps1 の 6 件（出力をそのまま期待値にした）
+  // The 6 cases of 0.2.0's tests/test-sentence-rule.ps1 (its output as the expectation).
   test('pickSentence: a short first sentence takes the second while the two stay short', () => {
-    expect(pickSentence('完了しました。テストは42件すべて通っています。')).toBe('完了しました。テストは42件すべて通っています。')
-    expect(pickSentence('完了しました。認証まわりのリファクタリングを行いトークン検証を書き直しました。')).toBe(
+    expect(pick('完了しました。テストは42件すべて通っています。')).toBe('完了しました。テストは42件すべて通っています。')
+    expect(pick('完了しました。認証まわりのリファクタリングを行いトークン検証を書き直しました。')).toBe(
       '完了しました。認証まわりのリファクタリングを行いトークン検証を書き直しました。',
     )
     expect(
-      pickSentence('完了しました。認証まわりのリファクタリングを行い、トークンの検証処理とセッション管理を全面的に書き直したうえで統合テストも追加しています。'),
+      pick('完了しました。認証まわりのリファクタリングを行い、トークンの検証処理とセッション管理を全面的に書き直したうえで統合テストも追加しています。'),
     ).toBe('完了しました。')
-    expect(pickSentence('認証まわりのリファクタリングが完了し、テストは42件すべて通っています。次はデプロイです。')).toBe(
+    expect(pick('認証まわりのリファクタリングが完了し、テストは42件すべて通っています。次はデプロイです。')).toBe(
       '認証まわりのリファクタリングが完了し、テストは42件すべて通っています。',
     )
-    expect(pickSentence('ビルドとテストが完了しましたのでご確認を。次に進みます。')).toBe('ビルドとテストが完了しましたのでご確認を。')
-    expect(pickSentence('完了しました。')).toBe('完了しました。')
+    expect(pick('ビルドとテストが完了しましたのでご確認を。次に進みます。')).toBe('ビルドとテストが完了しましたのでご確認を。')
+    expect(pick('完了しました。')).toBe('完了しました。')
   })
 
   test('pickSentence: code, tables, links and URLs are not read; no sentence end takes the first 60 chars', () => {
-    expect(pickSentence('```ts\nconst a = 1\n```\n詳しくは[資料](https://x.example)を見てください。')).toBe('詳しくは資料を見てください。')
-    expect(pickSentence('| a | b |\n| 1 | 2 |\n表のとおりです。')).toBe('表のとおりです。')
-    expect(pickSentence('abc')).toBeNull()
-    expect(pickSentence('')).toBeNull()
-    expect(pickSentence('句点の無い長い文'.repeat(10))).toBe(`${'句点の無い長い文'.repeat(10).slice(0, 60)}。`)
+    expect(pick('```ts\nconst a = 1\n```\n詳しくは[資料](https://x.example)を見てください。')).toBe('詳しくは資料を見てください。')
+    expect(pick('| a | b |\n| 1 | 2 |\n表のとおりです。')).toBe('表のとおりです。')
+    expect(pick('abc')).toBeNull()
+    expect(pick('')).toBeNull()
+    expect(pick('句点の無い長い文'.repeat(10))).toBe(`${'句点の無い長い文'.repeat(10).slice(0, 60)}。`)
   })
 
-  // 0.2.0 tests/test-stop-case.ps1 の 25 件
+  // The 25 cases of 0.2.0's tests/test-stop-case.ps1.
   test('stopCase: ask, trouble and done from the last two sentences', () => {
     const cases: Array<[ReturnType<typeof stopCase>, string]> = [
       ['done', 'レビューと最適化を完了し、setup.ps1の2手順で導入できるようになりました。BOMや戻り値の不具合も修正済みです。'],
@@ -72,7 +64,8 @@ describe('text', () => {
     for (const [want, text] of cases) expect([text, stopCase(text)]).toEqual([text, want])
   })
 
-  // 0.2.0 tests/test-readings.ps1 の置き換え 17 件（ENGINE の読みの照合は実機確認で見る）
+  // The 17 replacements of 0.2.0's tests/test-readings.ps1 (how the engine then
+  // reads them is checked by ear).
   test('convertReading: dictionary first, long all-caps words lowercased, word boundaries kept', () => {
     const cases: Array<[string, string]> = [
       ['FIXを入れました。', 'フィックスを入れました。'],

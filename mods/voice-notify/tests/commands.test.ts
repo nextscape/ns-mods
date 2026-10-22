@@ -3,11 +3,11 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { jobsStamp, phraseJobs } from '../hooks/phrases'
-import { PHRASE_CFG, ROOT, world } from './world'
+import { PHRASE_CFG, PHRASE_USER, ROOT, world } from './world'
 import type { World, WorldOptions } from './world'
 
 function setup(on: On, opts: WorldOptions = {}): World {
-  return world(on, { config: PHRASE_CFG, ...opts })
+  return world(on, { config: PHRASE_USER, ...opts })
 }
 
 async function settle(w: World) {
@@ -27,12 +27,15 @@ describe('voice-notify commands', () => {
     await $.session.start({ surface: 'terminal', isInteractive: true, cwd: ROOT } as never)
     await settle(w)
     expect(w.commands).toEqual(['voice-notify'])
+    // An `off` typed mid-turn takes effect at once, before the turn's end is read.
+    expect(w.registrations[0]).toMatchObject({ immediate: true })
     expect(synths(w)).toHaveLength(14)
     expect(w.files.get(`${ROOT}/state/phrases-stamp`)).toBe(jobsStamp(phraseJobs(PHRASE_CFG, ROOT), PHRASE_CFG))
   })
 
   test('filling in beside phrases of unknown settings (0.2.0, no stamp) leaves no stamp, so doctor asks for force', async ($, on) => {
-    // 0.2.0 のフレーズは先頭の無音が無い。stamp を書くと doctor が作り直しを案内せず、頭が欠けたまま鳴る
+    // 0.2.0's phrases lack the lead silence: with a stamp, doctor would not ask
+    // for them to be remade, and their starts would go on being cut.
     const jobs = phraseJobs(PHRASE_CFG, ROOT)
     const w = setup(on, { files: Object.fromEntries(jobs.slice(1).map(j => [j.path, 'RIFF'])) })
     await $.session.start({ surface: 'terminal', isInteractive: true, cwd: ROOT } as never)
@@ -67,7 +70,7 @@ describe('voice-notify commands', () => {
     expect(await run($, 'voice-notify')).toBe('音声通知: 再開しました')
     expect(w.files.has(`${ROOT}/state/mute`)).toBe(false)
     expect(w.played.map(p => p.split('/').slice(-2, -1)[0])).toEqual(['mute', 'unmute'])
-    expect(await run($, 'voice-notify', 'status')).toBe('手動ミュート: OFF\nマイク使用中の自動ミュート: 無効\n話者: 最終 めたん / 中間 ずんだもん / 話速: 1.3\nクレジット: VOICEVOX')
+    expect(await run($, 'voice-notify', 'status')).toBe('手動ミュート: OFF\nマイク使用中の自動ミュート: 無効\n話者: 最終 めたん / 中間 ずんだもん / 話速: 1.3\nクレジット: VOICEVOX:四国めたん、VOICEVOX:ずんだもん')
     expect(await run($, 'voice-notify', 'loud')).toMatch(/^知らない引数です: loud。使い方: \/voice-notify \[on\|off\|status\]/)
   })
 
@@ -100,7 +103,8 @@ describe('voice-notify commands', () => {
   })
 
   test('setup force removes every wav in the phrase folders, stale ones too, before remaking', async ($, on) => {
-    // 文言を6件から2件に減らしたあとの force。03〜06.wav が残ると、消した文言が鳴り続ける
+    // force after the wording went from six to two: 03-06.wav left behind would
+    // keep saying phrases that are gone.
     const stale: Record<string, string> = {}
     for (const n of ['01', '02', '03', '04', '05', '06']) stale[`${ROOT}/phrases/metan/stop/done/${n}.wav`] = 'old'
     const w = setup(on, { files: { ...stale, [`${ROOT}/phrases/metan/stop/done/.keep`]: '' } })
@@ -191,6 +195,12 @@ describe('voice-notify commands', () => {
     expect(await run($, 'voice-notify', 'setup')).toMatch(/NG   systemctl --user enable が失敗/)
     expect(await run($, 'voice-notify', 'doctor')).toMatch(/注意 ログオン時起動（systemd）なし/)
     expect(await run($, 'voice-notify', 'remove')).toMatch(/^voice-notify を撤去します/)
+  })
+
+  test('a config.json with a value of the wrong kind: setup names the key, and nothing plays', async ($, on) => {
+    const w = setup(on, { config: { ...PHRASE_USER, speech: { summaryMaxChars: '60' } } })
+    expect(await run($, 'voice-notify', 'setup')).toMatch(/NG   config\.json を読めません（.*speech\.summaryMaxChars は数値にする.*）/)
+    expect(w.runs.filter(a => a[0] !== 'uname')).toEqual([])
   })
 
   test('a broken config.json: setup says so, remove still runs', async ($, on) => {

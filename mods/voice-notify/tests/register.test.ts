@@ -2,13 +2,13 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { DEFAULT_CONFIG, ROOT, delay, world } from './world'
+import { USER_CONFIG, ROOT, delay, world } from './world'
 import type { World, WorldOptions } from './world'
 
-// summaryMinChars（80）を超える長さにする
+// Longer than summaryMinChars (80).
 const LONG = '要約の受け渡しをやめて、同じ処理の中で待つようにしました。テストも通っています。'.repeat(3)
 
-// どのフレーズにも wav を1つずつ置く
+// One wav in every phrase folder.
 function phrases(): Record<string, string> {
   const names = [
     'stop/done', 'stop/ask', 'stop/trouble', 'stop/solo', 'stop/interim', 'stop/brief/done', 'stop/brief/ask',
@@ -23,7 +23,7 @@ function setup(on: On, opts: WorldOptions = {}): World {
   return world(on, { ...opts, files: { ...phrases(), ...(opts.files ?? {}) } })
 }
 
-// 裏で流れる読み上げ（hook は待たずに返す）を最後まで進める
+// Runs the speech the hooks leave in the background (they return at once) to its end.
 async function settle(w: World) {
   for (let i = 0; i < 10; i++) await w.clock.settle()
 }
@@ -54,7 +54,7 @@ describe('voice-notify', () => {
     expect(spoke(w)[1]).toMatch(/^cache\/[0-9a-f]{16}\.wav$/)
     expect(w.asks[0]).toMatchObject({ model: 'haiku', effort: 'low', prompt: LONG, maxTokens: 300, timeoutMs: 15_000 })
     expect(log(w)).toMatch(/INFO stop +読み上げ: 要約しました。/)
-    // 合成のクエリは stdin で渡し、先頭の無音を足してある
+    // The synthesis query goes on stdin, with the lead silence added.
     const at = w.runs.findIndex(a => a[0] === 'curl.exe')
     expect(w.runs[at]).toContain('@-')
     expect(JSON.parse(w.inputs[at]!)).toMatchObject({ prePhonemeLength: 0.7, speedScale: 1.3 })
@@ -86,12 +86,63 @@ describe('voice-notify', () => {
     expect(spoke(w)).toEqual(['phrases/metan/failure'])
   })
 
-  test('a summary call that throws while the phrase plays is logged, not left unhandled', async ($, on) => {
+  test('a summary call that throws falls back to the first sentences, with a warning', async ($, on) => {
     const w = setup(on, { modelThrows: true })
     await turn($)
     await settle(w)
-    expect(spoke(w)).toEqual(['phrases/metan/stop/done'])
-    expect(log(w)).toMatch(/ERR  stop +.*model\.complete/)
+    expect(spoke(w)[0]).toBe('phrases/metan/stop/done')
+    expect(spoke(w)[1]).toMatch(/^cache\//)
+    expect(log(w)).toMatch(/WARN stop +要約失敗、1文目を読む: /)
+    expect(log(w)).toMatch(/INFO stop +読み上げ: 要約の受け渡しをやめて/)
+  })
+
+  test('a very long answer is sent to Haiku as its head and tail only', async ($, on) => {
+    const w = setup(on)
+    const answer = `冒頭の報告です。${'あ'.repeat(20_000)}末尾の結論です。`
+    await turn($, { answer })
+    await settle(w)
+    const prompt = String(w.asks[0]!.prompt)
+    expect(prompt.length).toBeLessThan(5_000)
+    expect(prompt.startsWith('冒頭の報告です。')).toBe(true)
+    expect(prompt.endsWith('末尾の結論です。')).toBe(true)
+  })
+
+  test('the same text synthesized twice at once is played twice, each from its own part file', async ($, on) => {
+    const outs: string[] = []
+    const w = setup(on, {
+      run: argv => {
+        if (/^curl/.test(argv[0]!) && argv[1] !== '--version') outs.push(argv[argv.indexOf('-o') + 1]!)
+        return undefined
+      },
+    })
+    await Promise.all([
+      $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: {} } as never),
+      $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: {} } as never),
+    ])
+    await settle(w)
+    expect(outs).toHaveLength(2)
+    expect(new Set(outs).size).toBe(2)
+    expect(log(w)).not.toMatch(/合成失敗/)
+    expect(spoke(w).filter(p => p.startsWith('cache/'))).toHaveLength(2)
+  })
+
+  test('a synthesis cut short leaves no wav behind, so the next one is made afresh', async ($, on) => {
+    let cut = true
+    const w = setup(on, {
+      run: argv => {
+        if (!/^curl/.test(argv[0]!) || argv[1] === '--version' || !cut) return undefined
+        cut = false
+        w.files.set(argv[argv.indexOf('-o') + 1]!.replace(/\\/g, '/'), 'RIFF-half')
+        return { exitCode: 28, stderr: 'Operation timed out' }
+      },
+    })
+    await turn($)
+    await settle(w)
+    expect([...w.files.keys()].filter(k => /.wav(.part)?$/.test(k) && k.includes('/cache/'))).toEqual([])
+    await turn($)
+    await settle(w)
+    const cached = [...w.files.entries()].filter(([k]) => k.includes('/cache/') && k.endsWith('.wav'))
+    expect(cached.map(([, v]) => v)).toEqual(['RIFF-fake-wav'])
   })
 
   test('a failure before anything plays is still logged', async ($, on) => {
@@ -189,6 +240,19 @@ describe('voice-notify', () => {
     expect(log(w)).toMatch(/メインが作業中のため無音/)
   })
 
+  test('a task completed while a turn is working is silent; one completed between turns plays', async ($, on) => {
+    const w = setup(on)
+    await $.turn.start({ text: 'x', turnId: 'busy-task' })
+    await $.classic.TaskCompleted({ task_id: '1', task_subject: 's' } as never)
+    await settle(w)
+    expect(w.played).toEqual([])
+    expect(log(w)).toMatch(/INFO task +メインが作業中のため無音/)
+    await $.turn.complete({ turnId: 'busy-task', answer: '', durationMs: 1, isAborted: true, reason: 'aborted' } as never)
+    await $.classic.TaskCompleted({ task_id: '2', task_subject: 's' } as never)
+    await settle(w)
+    expect(spoke(w)).toEqual(['phrases/metan/task'])
+  })
+
   test('a broken config.json says so once and plays nothing', async ($, on) => {
     const w = setup(on, { config: '{"speaker":' })
     await turn($)
@@ -200,7 +264,7 @@ describe('voice-notify', () => {
   })
 
   test('keys missing from config.json fall back to the shipped defaults', async ($, on) => {
-    // 0.2.0 からの config.json に、notification.toolLabels が無い場合など
+    // A config.json from 0.2.0 has no notification.toolLabels, for one.
     const w = setup(on, { config: { speaker: 'metan', speakers: { metan: { id: 2 } } } })
     await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: {} } as never)
     await settle(w)
@@ -251,7 +315,7 @@ describe('voice-notify', () => {
       await delay(20)
       await settle(w)
     }
-    // メインの前置きと本文、報告、許可待ちの前置きと本文
+    // The main turn's phrase and body, the report, the permission phrase and body.
     expect(w.played).toHaveLength(5)
     expect(w.maxPlaying).toBe(1)
   })
@@ -282,16 +346,16 @@ describe('voice-notify', () => {
   })
 
   test('a home with Japanese and spaces: the folder is made before curl writes, without --create-dirs', async ($, on) => {
-    // Windows 標準の curl は --create-dirs で非 ASCII のフォルダを作れない（exit 23。実測）
+    // Windows' own curl cannot make a non-ASCII folder with --create-dirs (exit 23, seen).
     const home = 'C:/ホーム/山田 太郎/voice-notify'
-    const files: Record<string, string> = { [`${home}/config.json`]: JSON.stringify(DEFAULT_CONFIG) }
+    const files: Record<string, string> = { [`${home}/config.json`]: JSON.stringify(USER_CONFIG) }
     for (const [k, v] of Object.entries(phrases())) files[k.replace(ROOT, home)] = v
     const w = world(on, { config: null, env: { VOICE_NOTIFY_HOME: home }, files })
     await turn($)
     await settle(w)
     const curl = w.runs.find(a => a[0] === 'curl.exe')!
     expect(curl).not.toContain('--create-dirs')
-    expect(curl[curl.indexOf('-o') + 1]).toMatch(new RegExp(`^${home}/cache/[0-9a-f]{16}\.wav$`))
+    expect(curl[curl.indexOf('-o') + 1]).toMatch(new RegExp(`^${home}/cache/[0-9a-f]{16}\.wav\.[0-9a-z]+\.part$`))
     expect(w.files.has(`${home}/cache/.keep`)).toBe(true)
     expect(w.played.some(p => p.startsWith(`${home}/cache/`))).toBe(true)
   })

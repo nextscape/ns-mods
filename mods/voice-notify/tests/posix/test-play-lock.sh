@@ -1,7 +1,8 @@
 #!/bin/sh
-# play.sh のロックの検査（macOS・Linux の CI と Git Bash で動く）。
+# Checks play.sh's lock (runs in the macOS and Linux CI, and in Git Bash).
 #   sh tests/posix/test-play-lock.sh
-# 1. 2本を同時に鳴らしても重ならない  2. 消せない古いロックがあっても、待ちきって鳴らす（止まらない）
+# 1. Two clips started together do not overlap.  2. A stale lock that cannot be
+# removed is waited out, and the clip still plays (nothing hangs).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 play="$here/../../scripts/posix/play.sh"
@@ -9,7 +10,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 fail=0
 
-# 偽のプレイヤー：始まりと終わりを記録し、1秒かかる
+# A fake player: records its start and end, and takes a second.
 cat > "$work/player" <<'P'
 #!/bin/sh
 echo "start $1" >> "$(dirname "$0")/events"
@@ -23,19 +24,20 @@ sh "$play" "$work/lock" "$work/player" b &
 wait
 order=$(tr '\n' ' ' < "$work/events")
 case "$order" in
-  "start a end a start b end b "|"start b end b start a end a ") echo "ok   重ならない: $order" ;;
-  *) echo "NG   重なった: $order"; fail=1 ;;
+  "start a end a start b end b "|"start b end b start a end a ") echo "ok   no overlap: $order" ;;
+  *) echo "NG   overlapped: $order"; fail=1 ;;
 esac
 
-# 中にファイルがあって rmdir できない古いロック（2000年の日付）
+# A stale lock (dated 2000) that rmdir cannot remove: a file is inside.
 mkdir "$work/stale"; : > "$work/stale/keep"; touch -t 200001010000 "$work/stale"
-# 待つのは約20秒（プロセスの起動が遅い環境ではもう少し）。回り続ける不具合を捕まえるため、90秒で見切る
+# The wait is about 20 seconds (a little more where processes start slowly).
+# Past 90 it is given up on, to catch a loop that never ends.
 sh "$play" "$work/stale" "$work/player" c &
 pid=$!
 took=0
 while kill -0 "$pid" 2>/dev/null && [ "$took" -lt 90 ]; do sleep 1; took=$((took + 1)); done
-if kill -0 "$pid" 2>/dev/null; then kill "$pid"; echo "NG   消せないロックで 90 秒たっても終わらない"; fail=1
-elif [ "$took" -le 60 ] && grep -q "end c" "$work/events"; then echo "ok   消せないロックでも ${took} 秒で鳴らした"
-else echo "NG   消せないロックで ${took} 秒（60 秒以内に鳴るはず）"; fail=1; fi
+if kill -0 "$pid" 2>/dev/null; then kill "$pid"; echo "NG   a lock that cannot be removed: still running after 90 seconds"; fail=1
+elif [ "$took" -le 60 ] && grep -q "end c" "$work/events"; then echo "ok   a lock that cannot be removed: played after ${took} seconds"
+else echo "NG   a lock that cannot be removed: ${took} seconds (it should play within 60)"; fail=1; fi
 
 exit "$fail"

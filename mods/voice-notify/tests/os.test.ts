@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { MIC_QUERY, micInUseFrom, osFrom, removeArgv } from '../hooks/os'
+import { MIC_QUERY, micInUseFrom, moveArgv, osFrom, psArgv, removeArgv, slashPath, winPath } from '../hooks/os'
 
 const REG = [
   'HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\\NonPackaged\\C:#Tools#rec.exe',
@@ -28,6 +28,20 @@ describe('os', () => {
     })
     expect(removeArgv('linux', '/p', ['/h/x.wav', '/h/a b.wav'])).toEqual({ argv: ['rm', '-f', '--', '/h/x.wav', '/h/a b.wav'], stdin: '' })
     expect(removeArgv('macos', '/p', [])).toBeNull()
+  })
+
+  test('moveArgv: Windows passes the two paths on stdin to move.ps1; elsewhere mv', () => {
+    expect(moveArgv('windows', 'C:/p', 'C:/vn/cache/a.wav.part', 'C:/vn/cache/a.wav')).toEqual({
+      argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\p\\scripts\\windows\\move.ps1'],
+      stdin: 'C:\\vn\\cache\\a.wav.part\nC:\\vn\\cache\\a.wav',
+    })
+    expect(moveArgv('linux', '/p', '/h/a.wav.part', '/h/a.wav')).toEqual({ argv: ['mv', '-f', '--', '/h/a.wav.part', '/h/a.wav'], stdin: '' })
+  })
+
+  test('paths: Windows separators, or forward slashes with no trailing slash', () => {
+    expect(winPath('C:/a/b')).toBe('C:\\a\\b')
+    expect(slashPath('C:\\a\\b\\')).toBe('C:/a/b')
+    expect(psArgv('C:/p', 'x.ps1', ['-A'])).toEqual(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\p\\scripts\\windows\\x.ps1', '-A'])
   })
 
   test('micInUseFrom: an app with a start and no stop is using the microphone', () => {
