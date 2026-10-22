@@ -9,8 +9,8 @@ const label = (level: string) => LABELS.find(one => one === level)
 // The visible text each coming model request answers with, in turn.
 const replies: string[] = []
 
-// The engine beneath the plugin: classify answers from `answers` in turn
-// (an Error throws), the model request records the effort it was sent with
+// The engine beneath the plugin: the classifier's completion answers from
+// `answers` in turn (an Error is a call that timed out), the model request records the effort it was sent with
 // and answers from `replies`, and the turn's own events and the status line
 // simply complete.
 function world(on: On, answers: Array<string | undefined | Error>) {
@@ -19,13 +19,16 @@ function world(on: On, answers: Array<string | undefined | Error>) {
   const seen = {
     sent: [] as Array<string | number | undefined>,
     inputs: [] as string[],
+    timeouts: [] as Array<number | undefined>,
     status: [] as Array<string | undefined>,
   }
-  on('model.classify', async ($, e) => {
-    seen.inputs.push(e.text)
+  on('model.complete', async ($, e) => {
+    seen.inputs.push(e.prompt)
+    seen.timeouts.push(e.timeoutMs)
     const answer = answers.shift()
-    if (answer instanceof Error) throw answer
-    return { value: answer }
+    const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    if (answer instanceof Error) return { value: { isAnswered: false, reason: 'aborted', usage } } as never
+    return { value: { isAnswered: true, text: answer ?? '', usage } } as never
   })
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
   on('turn.step', async function* ($, e) {
@@ -33,6 +36,7 @@ function world(on: On, answers: Array<string | undefined | Error>) {
     return { turnId: e.turnId, index: e.index, answer: replies.shift() ?? '', toolUses: [], stopReason: 'end_turn', usage: null }
   })
   on('turn.complete', async ($, e) => ({ text: e.answer }))
+  on('classic.PostModelSwitch', async () => ({}) as never)
   on('ui.status', async ($, e) => {
     seen.status.push(e.text)
     return { value: undefined }
@@ -335,6 +339,34 @@ describe('effort-router', () => {
     expect(seen.status).toEqual(['not routed (claude-haiku-4-5-20251001)'])
   })
 
+  test('a switch to a routed model is judged from the next prompt; a switch away stops judging', async ($, on) => {
+    const seen = world(on, [label('high')])
+    on('session.model', async () => ({ value: 'claude-opus-4-1' }))
+    const switchTo = (from: string, to: string) =>
+      $.classic.PostModelSwitch({ from_model: from, to_model: to, requested_model: null } as never)
+    await turn($, LONG, { model: 'claude-opus-4-1' })
+    await switchTo('claude-opus-4-1', 'claude-opus-5-5')
+    await turn($, LONG, { effort: 'medium' })
+    expect(seen.sent).toEqual(['xhigh', 'high'])
+    await switchTo('claude-opus-5-5', 'claude-opus-4-1')
+    await turn($, LONG, { model: 'claude-opus-4-1' })
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.status.at(-1)).toBe('not routed (claude-opus-4-1)')
+  })
+
+  test('/effort on a model not routed leaves routing as it was', async ($, on) => {
+    const seen = world(on, [label('high')])
+    on('session.model', async () => ({ value: 'claude-opus-4-1' }))
+    on('command.run', { command: 'effort' }, async () => ({ text: '' }))
+    await turn($, LONG, { model: 'claude-opus-4-1' })
+    await effort($, 'high')
+    expect(seen.status.at(-1)).toBe('not routed (claude-opus-4-1)')
+    await $.classic.PostModelSwitch({ from_model: 'claude-opus-4-1', to_model: 'claude-opus-5-5', requested_model: null } as never)
+    await turn($, LONG, { effort: 'medium' })
+    expect(seen.sent.at(-1)).toBe('high')
+    expect(seen.inputs.length).toBe(1)
+  })
+
   test('a first prompt on a routed model is judged when the session names it', async ($, on) => {
     const { sent } = world(on, [label('high')])
     on('session.model', async () => ({ value: 'claude-opus-5-5' }))
@@ -348,6 +380,21 @@ describe('effort-router', () => {
     await turn($, LONG)
     await turn($, LONG)
     expect(sent).toEqual(['medium', 'medium', 'medium'])
+  })
+
+  test('a judgment is bounded in time; one that runs out keeps the previous level', async ($, on) => {
+    const seen = world(on, [label('high'), new Error('timed out')])
+    await turn($, LONG)
+    await turn($, LONG)
+    expect(seen.timeouts.every(ms => typeof ms === 'number' && ms > 0 && ms <= 5000)).toBe(true)
+    expect(seen.sent).toEqual(['high', 'high'])
+    expect(seen.status.at(-1)).toBe('high (error, kept)')
+  })
+
+  test('a reply naming the label in other words is still read', async ($, on) => {
+    const { sent } = world(on, ['High.'])
+    await turn($, LONG)
+    expect(sent).toEqual(['high'])
   })
 
   test('subagent steps are left alone', async ($, on) => {

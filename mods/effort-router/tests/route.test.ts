@@ -17,6 +17,7 @@ import {
   optionsOf,
   picked,
   plan,
+  raise,
   tail,
 } from '../hooks/route'
 import type { TurnSignals } from '../types'
@@ -47,6 +48,9 @@ const signals = (options = optionsOf(ANSWER), asks = true): TurnSignals => ({
 describe('route', () => {
   test('labels map back to levels', () => {
     expect(LABELS.map(levelOf)).toEqual(['low', 'medium', 'high', 'xhigh'])
+    // The reply's first word, whatever case, marks or punctuation wrap it.
+    expect(['High.', '**xhigh**', ' medium: settled approach', '`low`'].map(levelOf)).toEqual(['high', 'xhigh', 'medium', 'low'])
+    expect(levelOf('The answer is high')).toBe(undefined)
     expect(levelOf('nonsense')).toBe(undefined)
     expect(levelOf(undefined)).toBe(undefined)
   })
@@ -91,6 +95,14 @@ describe('route', () => {
     expect(escalate('medium', 2, 1)).toBe('medium')
     expect(escalate('medium', 2, 2)).toBe('high')
     expect(escalate('xhigh', 30, 5)).toBe('xhigh')
+  })
+
+  test('a raise is counted once, when the level first goes up, and says what ran long', () => {
+    expect(raise('low', 10, 0, 0)).toEqual({ level: 'low', bumps: 0, added: 0 })
+    expect(raise('low', 11, 0, 0)).toEqual({ level: 'medium', bumps: 1, added: 1, raisedBy: '10 requests' })
+    expect(raise('low', 12, 0, 1)).toEqual({ level: 'medium', bumps: 1, added: 0 })
+    expect(raise('medium', 3, 2, 0)).toEqual({ level: 'high', bumps: 1, added: 1, raisedBy: '2 tool errors' })
+    expect(raise('xhigh', 30, 5, 0)).toEqual({ level: 'xhigh', bumps: 0, added: 0 })
   })
 
   test('the judgment stands as is; a failed one keeps the previous level', () => {

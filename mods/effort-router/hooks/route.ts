@@ -11,6 +11,15 @@ export const LEVELS: readonly Level[] = ['low', 'medium', 'high', 'xhigh']
 // and their definitions lead the text it reads.
 export const LABELS: readonly string[] = LEVELS
 
+// The classifier's own instruction: the [rubric] in its input defines the labels.
+export const CLASSIFIER =
+  'Classify the text by its [rubric]. Answer with exactly one word, one of: low, medium, high, xhigh. No other words.'
+
+// The turn waits for the judgment, and a hook's time limit stops while a `$`
+// call runs, so the call is bounded by its own clock; past it the previous
+// level stands, as for a failed call.
+export const JUDGE_TIMEOUT_MS = 4_000
+
 const RUBRIC = [
   '[rubric] Judge how much reasoning the [request] needs, reading it in the context of [prev]. Judge by how uncertain the right answer is and how costly a miss would be, not by the amount of work:',
   'low = nothing could be overlooked: chat, a confirmation, thanks or closing, a translation, a commit, a fully specified mechanical edit (a typo, a rename, a move);',
@@ -44,8 +53,10 @@ const ANSWER_TAIL_CHARS = 300
 const REQUEST_HEAD_CHARS = 600
 const REQUEST_TAIL_CHARS = 200
 
+// The level a reply names: its first word, whatever case, marks or
+// punctuation wrap it ("High.", "**xhigh**").
 export function levelOf(label: string | undefined): Level | undefined {
-  const head = label?.split(':')[0]?.trim()
+  const head = label?.toLowerCase().match(/^[^a-z]*([a-z]+)/)?.[1]
   return LEVELS.find(level => level === head)
 }
 
@@ -68,10 +79,12 @@ export function isRouted(model: string): boolean {
   return version >= ROUTED_FROM[found[1]!]!
 }
 
+const EFFORTS: readonly string[] = [...LEVELS, 'max']
+
 // What `/effort <args>` sets, when the args name a level.
 export function effortArg(args: string): string | null {
   const word = args.trim().toLowerCase()
-  return ['low', 'medium', 'high', 'xhigh', 'max'].includes(word) ? word : null
+  return EFFORTS.includes(word) ? word : null
 }
 
 // A background task's completion notice is not the person's request.
@@ -96,6 +109,20 @@ export function maxLevel(levels: ReadonlyArray<Level | null>): Level | null {
 export function escalate(level: Level, steps: number, errors: number): Level {
   const bump = steps > ESCALATE_STEPS || errors >= ESCALATE_ERRORS ? 1 : 0
   return LEVELS[Math.min(rank(level) + bump, LEVELS.length - 1)]!
+}
+
+// One request's level from the judged one: `steps` requests since the
+// judgment (this one included), `errors` tool errors since then, `bumps`
+// levels already added. `added` and `raisedBy` are set only on the request
+// that first goes up, so a raise is counted and shown once.
+export type Raise = { level: Level; bumps: number; added: number; raisedBy?: string }
+
+export function raise(base: Level, steps: number, errors: number, bumps: number): Raise {
+  const level = escalate(base, steps, errors)
+  const now = rank(level) - rank(base)
+  if (now <= bumps) return { level, bumps: now, added: 0 }
+  const raisedBy = errors >= ESCALATE_ERRORS ? `${errors} tool errors` : `${steps - 1} requests`
+  return { level, bumps: now, added: now - bumps, raisedBy }
 }
 
 // Code and stack traces become markers: the signal stays, the tokens go.

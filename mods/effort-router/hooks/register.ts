@@ -5,14 +5,13 @@ import type { Level, TurnSignals } from '../types'
 import { CASES } from './eval-cases'
 import type { EvalCase } from './eval-cases'
 import {
-  LABELS,
-  LEVELS,
+  CLASSIFIER,
+  JUDGE_TIMEOUT_MS,
   asLevel,
   asksOf,
   compose,
   decide,
   effortArg,
-  escalate,
   fromAsked,
   head,
   isNotice,
@@ -20,6 +19,7 @@ import {
   levelOf,
   optionsOf,
   plan,
+  raise,
   rank,
   tail,
 } from './route'
@@ -141,7 +141,7 @@ export const register: Register = on => {
     }
     return {
       text: isOn
-        ? 'on (picks low/medium/high/xhigh each prompt for Opus/Sonnet 5.5+ and Fable/Mythos 5.1+; a typed /effort runs as set for that turn)'
+        ? 'on (picks low/medium/high/xhigh each prompt for Opus/Sonnet/Haiku 5.5+ and Fable/Mythos 5.1+; a typed /effort runs as set for that turn)'
         : 'off (/effort applies)',
     }
   })
@@ -151,7 +151,8 @@ export const register: Register = on => {
   // as set; the turn after that is judged again.
   on('command.run', { command: 'effort' }, async ($, e, next) => {
     const ran = await next(e)
-    if (!isOn) return ran
+    // A model not routed keeps its own effort: nothing to hold back.
+    if (!isOn || (mainModel !== undefined && !isRouted(mainModel))) return ran
     const turn = current ? turns.get(current) : undefined
     if (turn) turn.manual = true
     else manualNext = true
@@ -159,6 +160,13 @@ export const register: Register = on => {
     if (turn && set) turn.shown = set
     show($, isOn, { level: undefined, judged: null, why: 'manual', isSession: false, setTo: set })
     return ran
+  }).catch(($, e, next) => next(e))
+
+  // /model names the main model at once, so the next prompt is judged (or
+  // not) for the model it will run on, not the one the last request named.
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    mainModel = e.to_model
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
@@ -231,15 +239,14 @@ export const register: Register = on => {
     const input = compose(asked.request, context, await read($, recentLevels), asked)
     const decision = decide(await judge($, input), from, asked.why)
     if (decision.why !== 'choice' && decision.why !== 'reply') return ran
-    Object.assign(turn, {
-      level: decision.level,
-      judged: decision.judged,
-      why: 'asked',
-      picked: asked.picked,
-      since: turn.steps,
-      sinceErrors: turn.toolErrors,
-      bumps: 0,
-    })
+    turn.level = decision.level
+    turn.judged = decision.judged
+    turn.why = 'asked'
+    turn.picked = asked.picked
+    // Escalation counts afresh from this judgment.
+    turn.since = turn.steps
+    turn.sinceErrors = turn.toolErrors
+    turn.bumps = 0
     show($, isOn, { ...decision, why: 'asked', picked: asked.picked, from, isSession: false })
     return ran
     // Re-judging only watches: if it throws, the answer still reaches the model.
@@ -268,12 +275,10 @@ export const register: Register = on => {
       turn.applied = asLevel(e.effort)
       return yield* answered(turn, next(e))
     }
-    const level = escalate(base, turn.steps - turn.since, turn.toolErrors - turn.sinceErrors)
-    const bumps = rank(level) - rank(base)
-    if (bumps > turn.bumps) {
-      turn.raised += bumps - turn.bumps
-      const errors = turn.toolErrors - turn.sinceErrors
-      show($, isOn, { ...turn, level, from: turn.applied ?? base, isSession: false, raisedBy: errors > 1 ? `${errors} tool errors` : `${turn.steps - turn.since - 1} requests` })
+    const { level, bumps, added, raisedBy } = raise(base, turn.steps - turn.since, turn.toolErrors - turn.sinceErrors, turn.bumps)
+    if (added > 0) {
+      turn.raised += added
+      show($, isOn, { ...turn, level, from: turn.applied ?? base, isSession: false, raisedBy })
     }
     turn.bumps = bumps
     turn.applied = level
@@ -328,10 +333,18 @@ export const register: Register = on => {
   })
 }
 
-// The classifier's answer, or the Error it rejected with.
-async function judge($: EngineInterface, input: string): Promise<string | undefined | Error> {
+// The classifier's answer, or an Error saying why there is none (the call
+// failed, ran past JUDGE_TIMEOUT_MS, or was refused).
+async function judge($: EngineInterface, input: string): Promise<string | Error> {
   try {
-    return await $.model.classify(input, LABELS, { model: 'haiku' })
+    const reply = await $.model.complete({
+      model: 'haiku',
+      system: CLASSIFIER,
+      prompt: input,
+      maxTokens: 8,
+      timeoutMs: JUDGE_TIMEOUT_MS,
+    })
+    return reply.isAnswered ? reply.text : new Error(reply.reason === 'aborted' ? `timed out after ${JUDGE_TIMEOUT_MS}ms` : reply.reason)
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error))
   }
@@ -429,7 +442,7 @@ async function evaluate($: EngineInterface): Promise<string> {
     slowest = Math.max(slowest, ms)
     const judged = answer instanceof Error ? undefined : levelOf(answer)
     const final = decide(answer, one.prev?.level ?? null, why).level
-    const isLow = judged !== undefined && LEVELS.indexOf(judged) < LEVELS.indexOf(one.expect)
+    const isLow = judged !== undefined && rank(judged) < rank(one.expect)
     if (judged === one.expect) hits += 1
     if (isLow) low += 1
     const mark = judged === one.expect ? 'ok ' : isLow ? 'LOW' : 'off'
