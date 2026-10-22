@@ -52,3 +52,33 @@ jobs:
         run: |
           sh -n mods/voice-notify/scripts/posix/play.sh
           sh mods/voice-notify/tests/posix/test-play-lock.sh
+
+  # 各 mod を、README に書いた最低の版の Claude Code でも検査する（mod の API は版によって変わる）。
+  # README の「Claude Code」の行と合わせておく。
+  oldest:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - claude: 2.1.287
+            mods: effort-router git-nudge quality-router
+          - claude: 2.1.299
+            mods: voice-notify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code ${{ matrix.claude }}
+        run: npm install -g @anthropic-ai/claude-code@${{ matrix.claude }}
+
+      - name: Validate and test ${{ matrix.mods }}
+        run: |
+          claude --version
+          for mod in ${{ matrix.mods }}; do
+            claude plugin validate "mods/$mod"
+            claude plugin test "mods/$mod"
+          done
