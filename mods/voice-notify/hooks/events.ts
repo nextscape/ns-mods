@@ -7,11 +7,15 @@ import { agentReportFallback, agentText, noticeKind, permissionText, pickFor, pl
 import { engineVersion, synthFor } from './engine'
 import { capture } from './gate'
 import { context, writeLog } from './io'
-import type { Runtime } from './runtime'
+import type { MainTurn, Runtime } from './runtime'
 import { begin, claimSpeech, playSynth, prepareBody, quiet, runningAgents, speakPhrase, summarize } from './speak'
 
-// The main conversation's turn ended.
-export async function onMainTurn($: EngineInterface, rt: Runtime, e: TurnCompleteInput): Promise<void> {
+// How long a turn's end waits for its classic Stop, when that comes after.
+export const STOP_WAIT_MS = 1000
+
+// The main conversation's turn ended. `turn` is null when its start was not
+// seen.
+export async function onMainTurn($: EngineInterface, rt: Runtime, e: TurnCompleteInput, turn: MainTurn | null): Promise<void> {
   // A turn that ended in an API error or a refusal says it did not go well.
   const failed = e.reason === 'error' || e.reason === 'refusal'
   const event = failed ? 'failure' : 'stop'
@@ -21,13 +25,20 @@ export async function onMainTurn($: EngineInterface, rt: Runtime, e: TurnComplet
     await speakPhrase($, ctx, 'final', ['failure'], event)
     return
   }
+  if (turn) await Promise.race([turn.stopped, $.clock.sleep(STOP_WAIT_MS)])
+  const pending = turn?.pending ?? 0
+  const tools = turn ? turn.tools : null
   const running = await runningAgents($)
   const alive = (await engineVersion($, ctx.cfg.enginePort)) !== null
-  const plan = planStop({ cfg: ctx.cfg, answer: e.answer, durationMs: e.durationMs, running, engineAlive: alive })
+  const plan = planStop({ cfg: ctx.cfg, answer: e.answer, durationMs: e.durationMs, running, pending, tools, engineAlive: alive })
   const kase = plan.pcase !== plan.case ? `${plan.case}→${plan.pcase}` : plan.case
-  const role = plan.role === 'interim' ? `中間・実行中${running}件` : '最終'
+  const role = plan.role === 'interim' ? `中間・実行中${running}件${pending > 0 ? `・裏の作業${pending}件` : ''}` : '最終'
   await writeLog($, ctx, 'INFO', event,
-    `本文 ${e.answer.length}字 / 作業 ${(e.durationMs / 1000).toFixed(1)}秒 / ケース ${kase}${plan.brief ? ' (brief)' : ''} / ${role} [${voiceFor(ctx.cfg, plan.role).name}]`)
+    `本文 ${e.answer.length}字 / 作業 ${(e.durationMs / 1000).toFixed(1)}秒 / 道具 ${tools ?? '?'}回 / ケース ${kase}${plan.brief ? ' (brief)' : ''} / ${role} [${voiceFor(ctx.cfg, plan.role).name}]`)
+  if (plan.silent) {
+    await writeLog($, ctx, 'INFO', event, '道具を使わない短い返事のため無音')
+    return
+  }
   if (!plan.read) {
     await speakPhrase($, ctx, plan.role, plan.phrases, event)
     return

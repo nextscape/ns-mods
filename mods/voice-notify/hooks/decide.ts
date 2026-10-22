@@ -13,7 +13,7 @@ export const DEFAULT_PROMPT =
   '次に示すのは Claude Code の応答本文です。音声読み上げ用の日本語1文に要約してください。要約文だけを出力してください。'
 
 // Interim reports (a subagent's report, an answer that ends while subagents
-// still run) take the other voice, when it is defined.
+// or background work still run) take the other voice, when it is defined.
 export function voiceFor(cfg: Pick<Config, 'speaker' | 'speakerInterim' | 'speakers'>, role: Role): Voice {
   const interim = role === 'interim' && cfg.speakerInterim && cfg.speakers[cfg.speakerInterim] ? cfg.speakerInterim : null
   const name = interim ?? cfg.speaker
@@ -25,7 +25,18 @@ export function pickFor(cfg: Config, text: string): string | null {
   return pickSentence(text, { shortMax: cfg.speech.shortSentenceChars, twoMax: cfg.speech.maxTwoSentenceChars })
 }
 
-export type StopInput = { cfg: Config; answer: string; durationMs: number; running: number; engineAlive: boolean }
+// `running`: subagents at work. `pending`: what the turn's classic Stop said
+// is still in flight (inFlight), 0 when no Stop came. `tools`: the tools the
+// turn called, null when its start was not seen.
+export type StopInput = {
+  cfg: Config
+  answer: string
+  durationMs: number
+  running: number
+  pending: number
+  tools: number | null
+  engineAlive: boolean
+}
 export type StopPlan = {
   role: Role
   case: StopCase | 'solo'
@@ -33,10 +44,18 @@ export type StopPlan = {
   brief: boolean
   phrases: string[]
   read: boolean
+  // Nothing to say: a short reply that called no tool, read on the screen.
+  silent: boolean
+}
+
+// What a classic Stop says is still in flight: background tasks, and wakeups
+// that fire once. A recurring one (/loop) would make every turn interim.
+export function inFlight(tasks: readonly unknown[] | undefined, crons: ReadonlyArray<{ recurring: boolean }> | undefined): number {
+  return (tasks?.length ?? 0) + (crons ?? []).filter(c => !c.recurring).length
 }
 
 export function planStop(i: StopInput): StopPlan {
-  const role: Role = i.running > 0 ? 'interim' : 'final'
+  const role: Role = i.running > 0 || i.pending > 0 ? 'interim' : 'final'
   const readable = !!pickFor(i.cfg, i.answer)
   const kase: StopCase | 'solo' = readable && i.engineAlive ? stopCase(i.answer) : 'solo'
   // An interim report must not say it is done: done and solo become interim.
@@ -51,7 +70,10 @@ export function planStop(i: StopInput): StopPlan {
   // Where a folder has no phrase, the next stands in (the order 0.2.0's
   // notify.ps1 used).
   const chain = [first, ...(first.startsWith('stop/brief/') ? [`stop/${pcase}`] : []), `stop/${kase}`, 'stop']
-  return { role, case: kase, pcase, brief, phrases: [...new Set(chain)], read: !brief && kase !== 'solo' }
+  // A short reply with no tool called was not work to report (ask and trouble
+  // still say what they are).
+  const silent = brief && i.tools === 0 && (pcase === 'done' || pcase === 'interim')
+  return { role, case: kase, pcase, brief, phrases: [...new Set(chain)], read: !brief && kase !== 'solo', silent }
 }
 
 // What Haiku is sent of an answer: a long one only by its head and tail

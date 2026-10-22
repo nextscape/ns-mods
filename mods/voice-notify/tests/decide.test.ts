@@ -8,6 +8,7 @@ import {
   noticeKind,
   permissionText,
   pickFor,
+  inFlight,
   planStop,
   planSummary,
   summaryInput,
@@ -36,34 +37,56 @@ describe('decide', () => {
   })
 
   test('planStop: a long turn reads its body after the case phrase', () => {
-    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, engineAlive: true })).toEqual({
-      role: 'final', case: 'done', pcase: 'done', brief: false, phrases: ['stop/done', 'stop'], read: true,
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 0, tools: 3, engineAlive: true })).toEqual({
+      role: 'final', case: 'done', pcase: 'done', brief: false, phrases: ['stop/done', 'stop'], read: true, silent: false,
     })
   })
 
   test('planStop: a short turn only plays the brief phrase, keeping ask and trouble apart', () => {
-    expect(planStop({ cfg: C, answer: ASK, durationMs: 10_000, running: 0, engineAlive: true })).toEqual({
-      role: 'final', case: 'ask', pcase: 'ask', brief: true, phrases: ['stop/brief/ask', 'stop/ask', 'stop'], read: false,
+    expect(planStop({ cfg: C, answer: ASK, durationMs: 10_000, running: 0, pending: 0, tools: 3, engineAlive: true })).toEqual({
+      role: 'final', case: 'ask', pcase: 'ask', brief: true, phrases: ['stop/brief/ask', 'stop/ask', 'stop'], read: false, silent: false,
     })
   })
 
   test('planStop: with subagents still running, done becomes interim in the interim voice', () => {
-    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 2, engineAlive: true })).toEqual({
-      role: 'interim', case: 'done', pcase: 'interim', brief: false, phrases: ['stop/interim', 'stop/done', 'stop'], read: true,
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 2, pending: 0, tools: 3, engineAlive: true })).toEqual({
+      role: 'interim', case: 'done', pcase: 'interim', brief: false, phrases: ['stop/interim', 'stop/done', 'stop'], read: true, silent: false,
     })
     // ask needs an answer even mid-way, so it stays ask.
-    expect(planStop({ cfg: C, answer: ASK, durationMs: 60_000, running: 1, engineAlive: true }).pcase).toBe('ask')
+    expect(planStop({ cfg: C, answer: ASK, durationMs: 60_000, running: 1, pending: 0, tools: 3, engineAlive: true }).pcase).toBe('ask')
   })
 
   test('planStop: no readable body or no engine is solo, which never reads', () => {
-    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 0, engineAlive: true })).toEqual({
-      role: 'final', case: 'solo', pcase: 'solo', brief: false, phrases: ['stop/solo', 'stop'], read: false,
+    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 0, pending: 0, tools: 3, engineAlive: true })).toEqual({
+      role: 'final', case: 'solo', pcase: 'solo', brief: false, phrases: ['stop/solo', 'stop'], read: false, silent: false,
     })
-    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, engineAlive: false }).case).toBe('solo')
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 0, tools: 3, engineAlive: false }).case).toBe('solo')
     // A solo interim report has no body to follow, so it takes the short interim.
-    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 1, engineAlive: true }).phrases).toEqual([
+    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 1, pending: 0, tools: 3, engineAlive: true }).phrases).toEqual([
       'stop/brief/interim', 'stop/interim', 'stop/solo', 'stop',
     ])
+  })
+
+  test('planStop: background work or a one-shot wakeup still in flight makes the turn interim', () => {
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 1, tools: 3, engineAlive: true })).toMatchObject({
+      role: 'interim', pcase: 'interim', read: true,
+    })
+    expect(inFlight([], [])).toBe(0)
+    expect(inFlight(undefined, undefined)).toBe(0)
+    expect(inFlight([{ id: 'b1' }, { id: 'b2' }], [{ recurring: false }])).toBe(3)
+    // A recurring wakeup (/loop) does not keep every turn interim.
+    expect(inFlight([], [{ recurring: true }])).toBe(0)
+  })
+
+  test('planStop: a short reply that called no tool is silent; ask and trouble still speak', () => {
+    const quick = { cfg: C, durationMs: 10_000, running: 0, pending: 0, engineAlive: true }
+    expect(planStop({ ...quick, answer: DONE, tools: 0 }).silent).toBe(true)
+    expect(planStop({ ...quick, answer: DONE, tools: 0, pending: 1 }).silent).toBe(true)
+    expect(planStop({ ...quick, answer: ASK, tools: 0 }).silent).toBe(false)
+    expect(planStop({ ...quick, answer: DONE, tools: 1 }).silent).toBe(false)
+    // A turn whose start was not seen keeps the brief phrase.
+    expect(planStop({ ...quick, answer: DONE, tools: null }).silent).toBe(false)
+    expect(planStop({ ...quick, answer: DONE, tools: 0, durationMs: 60_000 }).silent).toBe(false)
   })
 
   test('planSummary: disabled, other events and short answers are skipped; interim is capped', () => {

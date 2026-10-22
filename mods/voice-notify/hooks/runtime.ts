@@ -10,6 +10,10 @@ export type Runtime = {
   // /compact runs in progress (their turn ends are not read).
   working: Set<string>
   compacting: number
+  // The main conversation's latest turn (see MainTurn), by turnId, which a
+  // classic Stop belongs to.
+  turns: Map<string, MainTurn>
+  current: string | null
   os: Os | null
   // The Linux player found; one not found is not remembered, so a player
   // installed later plays without reopening the session.
@@ -34,6 +38,8 @@ export function createRuntime(): Runtime {
   return {
     working: new Set(),
     compacting: 0,
+    turns: new Map(),
+    current: null,
     os: null,
     linuxPlayer: null,
     warnedConfig: false,
@@ -44,6 +50,19 @@ export function createRuntime(): Runtime {
     playGate: new Gate(),
     debounceGate: new Gate(),
   }
+}
+
+// What a main turn did that its turn.complete does not say: how many tools it
+// called, and what its classic Stop said is still in flight (background
+// shells, monitors, subagents, one-shot wakeups); null until the Stop comes.
+// turn.complete and Stop may come in either order: `stopped` resolves on the
+// Stop.
+export type MainTurn = { tools: number; pending: number | null; stopped: Promise<void>; stop: () => void }
+
+export function mainTurn(): MainTurn {
+  let stop!: () => void
+  const stopped = new Promise<void>(resolve => (stop = resolve))
+  return { tools: 0, pending: null, stopped, stop }
 }
 
 // What an event that may speak works with: the home, its settings, the OS.

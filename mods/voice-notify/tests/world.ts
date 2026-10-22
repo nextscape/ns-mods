@@ -16,7 +16,7 @@ declare function setTimeout(callback: () => void, ms: number): unknown
 export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 export type RunResult = { exitCode?: number; stdout?: string; stderr?: string }
-export type Agent = { id: string; description: string; type: string; status: 'running' | 'completed' | 'idle' }
+export type Agent = { id: string; description: string; type: string; status: 'running' | 'waiting' | 'completed' | 'idle' }
 export type Reply = { isAnswered: true; text: string } | { isAnswered: false; reason: 'api-error'; status: number; error: string }
 
 export type WorldOptions = {
@@ -241,6 +241,8 @@ export function world(on: On, opts: WorldOptions = {}): World {
   on('classic.PermissionRequest', async () => ({}) as never)
   on('classic.Notification', async () => ({}) as never)
   on('classic.TaskCompleted', async () => ({}) as never)
+  on('classic.Stop', async () => ({}) as never)
+  on('tool.call', async () => ({ result: '' }) as never)
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('command.register', async ($, e) => {
     w.commands.push(e.name)

@@ -4,7 +4,8 @@ import { runCommand } from './commands'
 import { onAgentTurn, onMainTurn, onNotice, onPermission, onTask } from './events'
 import { resumePhrases } from './generate'
 import { background } from './io'
-import { createRuntime } from './runtime'
+import { inFlight } from './decide'
+import { createRuntime, mainTurn } from './runtime'
 import { COMMAND } from './setup'
 
 // voice-notify: says what happens in Claude Code in a VOICEVOX voice.
@@ -53,13 +54,37 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     rt.working.add(e.turnId)
+    // A Stop may come after its turn's end, so a turn is let go at the next
+    // one's start.
+    rt.turns.clear()
+    rt.turns.set(e.turnId, mainTurn())
+    rt.current = e.turnId
     return next(e)
   })
 
+  // A short reply that called no tool stays silent (decide.ts planStop).
+  on('tool.call', async ($, e, next) => {
+    const turn = e.agentId === undefined && rt.current ? rt.turns.get(rt.current) : undefined
+    if (turn) turn.tools++
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // What is still in flight when the main turn stops: a turn that only waits
+  // on it is not done.
+  on('classic.Stop', async ($, e, next) => {
+    const turn = e.agent_id === undefined && rt.current ? rt.turns.get(rt.current) : undefined
+    if (turn) {
+      turn.pending = inFlight(e.background_tasks, e.session_crons)
+      turn.stop()
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('turn.complete', async ($, e, next) => {
     rt.working.delete(e.turnId)
+    const turn = e.agentId ? null : (rt.turns.get(e.turnId) ?? null)
     if (rt.compacting === 0 && !e.isAborted) {
-      void background($, rt, e.agentId ? 'agentstop' : 'stop', e.agentId ? onAgentTurn($, rt, e) : onMainTurn($, rt, e))
+      void background($, rt, e.agentId ? 'agentstop' : 'stop', e.agentId ? onAgentTurn($, rt, e) : onMainTurn($, rt, e, turn))
     }
     return next(e)
   })

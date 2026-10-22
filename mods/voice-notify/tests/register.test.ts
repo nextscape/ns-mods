@@ -29,9 +29,29 @@ async function settle(w: World) {
 }
 
 let turns = 0
-async function turn($: Engine, o: { answer?: string; durationMs?: number; agentId?: string; reason?: 'answer' | 'aborted' | 'error'; text?: string } = {}) {
+type TurnOptions = {
+  answer?: string
+  durationMs?: number
+  agentId?: string
+  reason?: 'answer' | 'aborted' | 'error'
+  text?: string
+  // The tools the turn calls (1 by default), and what its Stop says is in
+  // flight; stop: 'after' sends the Stop after the turn's end, 'none' none.
+  tools?: string[]
+  background?: Array<{ id: string; type: string; status: string; description: string }>
+  crons?: Array<{ id: string; schedule: string; recurring: boolean; prompt: string }>
+  stop?: 'before' | 'after' | 'none'
+}
+
+async function turn($: Engine, o: TurnOptions = {}) {
   const turnId = `t${++turns}`
-  await $.turn.start({ text: o.text ?? 'お願いします', turnId })
+  // A subagent's run raises no turn.start, and its stop is no classic Stop.
+  const main = !o.agentId
+  if (main) await $.turn.start({ text: o.text ?? 'お願いします', turnId })
+  if (main) for (const tool of o.tools ?? ['Read']) await $.tool.call({ tool, input: {} } as never)
+  const stop = () => $.classic.Stop({ stop_hook_active: false, background_tasks: o.background ?? [], session_crons: o.crons ?? [] } as never)
+  const when = main ? (o.stop ?? 'before') : 'none'
+  if (when === 'before') await stop()
   await $.turn.complete({
     turnId,
     answer: o.answer ?? LONG,
@@ -40,6 +60,7 @@ async function turn($: Engine, o: { answer?: string; durationMs?: number; agentI
     reason: o.reason ?? 'answer',
     ...(o.agentId ? { agentId: o.agentId } : {}),
   } as never)
+  if (when === 'after') await stop()
 }
 
 const log = (w: World) => w.files.get(`${ROOT}/notify.log`) ?? ''
@@ -173,6 +194,57 @@ describe('voice-notify', () => {
     await settle(w)
     expect(spoke(w)[0]).toBe('phrases/zundamon/stop/interim')
     expect(log(w)).toMatch(/中間・実行中1件 \[zundamon\]/)
+  })
+
+  test('a subagent held on its own background work (waiting) still makes the turn interim', async ($, on) => {
+    const w = setup(on, { agents: [{ id: 'a1', description: '調査', type: 'Explore', status: 'waiting' }] })
+    await turn($)
+    await settle(w)
+    expect(spoke(w)[0]).toBe('phrases/zundamon/stop/interim')
+  })
+
+  test('a main turn that stops with a background shell still running is interim, never done', async ($, on) => {
+    const w = setup(on)
+    await turn($, { background: [{ id: 'b1', type: 'shell', status: 'running', description: 'npm test' }] })
+    await settle(w)
+    expect(spoke(w)[0]).toBe('phrases/zundamon/stop/interim')
+    expect(log(w)).toMatch(/中間・実行中0件・裏の作業1件 \[zundamon\]/)
+  })
+
+  test('a one-shot wakeup counts as work in flight; a recurring one does not', async ($, on) => {
+    const w = setup(on)
+    await turn($, { crons: [{ id: 'c1', schedule: '5 4 * * *', recurring: false, prompt: '続き' }] })
+    await settle(w)
+    await turn($, { crons: [{ id: 'c2', schedule: '*/5 * * * *', recurring: true, prompt: '/loop' }] })
+    await settle(w)
+    expect(spoke(w).filter(p => p.startsWith('phrases/'))).toEqual(['phrases/zundamon/stop/interim', 'phrases/metan/stop/done'])
+  })
+
+  test('a Stop that comes after the turn end is still waited for', async ($, on) => {
+    const w = setup(on)
+    await turn($, { stop: 'after', background: [{ id: 'b1', type: 'monitor', status: 'running', description: 'watch' }] })
+    await settle(w)
+    expect(spoke(w)[0]).toBe('phrases/zundamon/stop/interim')
+  })
+
+  test('with no Stop at all, the turn end speaks after a short wait', async ($, on) => {
+    const w = setup(on)
+    await turn($, { stop: 'none' })
+    await settle(w)
+    await w.clock.advance(1_000)
+    await settle(w)
+    expect(spoke(w)[0]).toBe('phrases/metan/stop/done')
+  })
+
+  test('a short reply that called no tool is silent; a short question still asks', async ($, on) => {
+    const w = setup(on)
+    await turn($, { durationMs: 5_000, tools: [] })
+    await settle(w)
+    expect(w.played).toEqual([])
+    expect(log(w)).toMatch(/道具 0回 .*\n.*道具を使わない短い返事のため無音/)
+    await turn($, { durationMs: 5_000, tools: [], answer: 'どちらで進めますか？' })
+    await settle(w)
+    expect(spoke(w)).toEqual(['phrases/metan/stop/brief/ask'])
   })
 
   test('a dead engine plays the solo phrase', async ($, on) => {
@@ -334,7 +406,7 @@ describe('voice-notify', () => {
     await settle(w)
     const lines = log(w).trimEnd().split('\n').map(l => l.slice(21))
     expect(lines[0]).toMatch(/^INFO stop +発火$/)
-    expect(lines[1]).toMatch(/^INFO stop +本文 \d+字 \/ 作業 10\.0秒 \/ ケース done \(brief\) \/ 最終 \[metan\]$/)
+    expect(lines[1]).toMatch(/^INFO stop +本文 \d+字 \/ 作業 10\.0秒 \/ 道具 1回 \/ ケース done \(brief\) \/ 最終 \[metan\]$/)
   })
 
   test('on Linux it plays through play.sh with the player it finds; with none, it logs once', async ($, on) => {

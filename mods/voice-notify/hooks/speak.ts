@@ -166,9 +166,10 @@ export async function prepareBody($: EngineInterface, ctx: Ctx, role: Role, answ
   return { text, r: await synthFor($, ctx, role, text) }
 }
 
+// Subagents at work, those held on background work they own (waiting) too.
 export async function runningAgents($: EngineInterface): Promise<number> {
   try {
-    return (await $.agent.list()).filter(a => a.status === 'running' || a.status === 'pending').length
+    return (await $.agent.list()).filter(a => a.status === 'running' || a.status === 'pending' || a.status === 'waiting').length
   } catch {
     return 0
   }
