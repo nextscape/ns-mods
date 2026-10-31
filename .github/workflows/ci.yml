@@ -64,6 +64,8 @@ jobs:
             mods: effort-router git-nudge quality-router
           - claude: 2.1.299
             mods: voice-notify
+          - claude: 2.1.314
+            mods: superpowers-progress
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

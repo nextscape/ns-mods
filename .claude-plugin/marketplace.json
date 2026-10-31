@@ -26,6 +26,11 @@
       "name": "git-nudge",
       "source": "./mods/git-nudge",
       "description": "git の遅れ（pull 忘れ）・置き忘れ・upstream が消えたブランチを知らせ、安全な取り込みと片付けを手伝う（モデルを呼ばない）"
+    },
+    {
+      "name": "superpowers-progress",
+      "source": "./mods/superpowers-progress",
+      "description": "Superpowers の作業の全体と現在地（計画名・工程・今のタスクと段階・進捗・判断）を会話の横のペインに出す（モデルを呼ばない）"
     }
   ]
 }

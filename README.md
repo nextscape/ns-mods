@@ -19,8 +19,9 @@ mod は、Claude Code の中で動く関数フック（JavaScript / TypeScript�
 | [quality-router](mods/quality-router/) | 品質を外さないための振り分け。本体の effort（medium〜max）、サブエージェントのモデルと effort、Workflow の `agent()` の点検、判定の記録。effort-router と一緒に入れると、本体の effort は effort-router に任せる | 対象は effort を受け付けるモデル。OS は問わない | 依頼ごとに1回、振り分けるサブエージェントの起動ごとに2回 |
 | [voice-notify](mods/voice-notify/) | VOICEVOX による音声通知。長い応答は Haiku で要約して読み上げる | Windows 10 / 11（macOS・Linux は試験的）と VOICEVOX。CLI のみ。Claude Code 2.1.299 以降 | 30秒を超えたターンの終わりなどに1回 |
 | [git-nudge](mods/git-nudge/) | git の遅れ（pull 忘れ）・置き忘れ・upstream が消えたブランチを知らせ、安全な取り込みと片付けを手伝う | git 2.29 以降。OS は問わない | 呼ばない |
+| [superpowers-progress](mods/superpowers-progress/) | Superpowers の作業の全体と現在地（計画名・工程・今のタスクと段階・進捗・判断）を会話の横のペインに出す | Superpowers の subagent-driven-development。Claude Code 2.1.314 で確認。OS は問わない | 呼ばない |
 
-実際に使って動作を確認した版は、effort-router が Claude Code 2.1.291、voice-notify・git-nudge・quality-router が 2.1.292 です（effort-router 0.11.0 と voice-notify 0.4.0 は、2.1.308 で検査とテストが通ることを確かめています）。CI では、最新の版に加えて、各 mod が対応する最も古い版（voice-notify は 2.1.299、ほかは 2.1.287）でも検査とテストを回しています。
+実際に使って動作を確認した版は、effort-router が Claude Code 2.1.291、voice-notify・git-nudge・quality-router が 2.1.292 です（effort-router 0.11.0 と voice-notify 0.4.0 は、2.1.308 で検査とテストが通ることを確かめています）。CI では、最新の版に加えて、各 mod が対応する最も古い版（voice-notify は 2.1.299、superpowers-progress は 2.1.314、ほかは 2.1.287）でも検査とテストを回しています。
 
 ## 導入
 
@@ -55,8 +56,8 @@ claude plugin uninstall <mod>
 
 | 項目 | 内容 |
 |---|---|
-| Claude Code の版 | mod は Claude Code 2.1.287 以降で既定で有効です。古い版では読み込まれません。voice-notify は 2.1.299 以降が要ります。mod の API は新しく、Claude Code の版によって仕様が変わり、動かなくなることがあります。動作を確認した版は上に書いています |
-| 使用量 | effort-router、voice-notify、quality-router は Claude Haiku を呼びます（git-nudge は呼びません）。mod のモデル呼び出しは、利用者のプランまたは API キーを使います（[公式ドキュメント](https://code.claude.com/docs/en/plugins/mods/api.md#call-a-model)）。呼ぶ頻度と送る内容は、各 mod の README の「費用」「データ」の節に書いています |
+| Claude Code の版 | mod は Claude Code 2.1.287 以降で既定で有効です。古い版では読み込まれません。voice-notify は 2.1.299 以降、superpowers-progress は 2.1.314 以降が要ります。mod の API は新しく、Claude Code の版によって仕様が変わり、動かなくなることがあります。動作を確認した版は上に書いています |
+| 使用量 | effort-router、voice-notify、quality-router は Claude Haiku を呼びます（git-nudge と superpowers-progress は呼びません）。mod のモデル呼び出しは、利用者のプランまたは API キーを使います（[公式ドキュメント](https://code.claude.com/docs/en/plugins/mods/api.md#call-a-model)）。呼ぶ頻度と送る内容は、各 mod の README の「費用」「データ」の節に書いています |
 | 権限 | mod は利用者の権限で動き、ファイルやネットワークにアクセスできます。導入前に何をするかを確かめたいときは、クローンして `claude plugin validate mods/<mod>` を実行すると、使うイベントと API の一覧が出ます |
 | 使う場所 | 導入コマンドはターミナルの Claude Code で実行してください。ターミナルからユーザースコープで入れた mod は、デスクトップアプリの Code タブのローカルセッションでも読み込まれます |
 
