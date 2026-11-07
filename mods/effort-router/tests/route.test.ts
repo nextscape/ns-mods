@@ -4,6 +4,7 @@ import {
   LABELS,
   asLevel,
   asksOf,
+  carried,
   compact,
   compose,
   decide,
@@ -11,10 +12,11 @@ import {
   escalate,
   fromAsked,
   isAgreement,
-  isNotice,
   isRouted,
   levelOf,
+  noticeOf,
   optionsOf,
+  originOf,
   picked,
   plan,
   raise,
@@ -122,7 +124,7 @@ describe('route', () => {
     ])
   })
 
-  test('routed: Opus, Sonnet and Haiku from 5.5, Fable and Mythos from 5.1; a task notice is not a request', () => {
+  test('routed: Opus, Sonnet and Haiku from 5.5, Fable and Mythos from 5.1', () => {
     const routed = [
       'claude-opus-5-5',
       'claude-opus-5-5[1m]',
@@ -150,8 +152,58 @@ describe('route', () => {
     expect(routed.filter(model => !isRouted(model))).toEqual([])
     expect(notRouted.filter(isRouted)).toEqual([])
     expect(['high', ' XHIGH ', 'max', '', 'auto', 'hgih'].map(effortArg)).toEqual(['high', 'xhigh', 'max', null, null, null])
-    expect(isNotice('<task-notification> <task-id>a1</task-id>')).toBe(true)
-    expect(isNotice('この通知は何？')).toBe(false)
+  })
+
+  test('a prompt that is not the person\'s request is told by its origin', () => {
+    expect(noticeOf('<task-notification> <task-id>a1</task-id>', { kind: 'task-notification' })).toBe('task notice')
+    expect(noticeOf('<agent-message from="a1">\n[Subagent hand-back] …', { kind: 'peer' })).toBe('agent message')
+    expect(noticeOf('レビュー結果です', { kind: 'peer-send-message' })).toBe('agent message')
+    expect(noticeOf('The voice plugin sent a message:\nhi', { kind: 'plugin', name: 'voice' })).toBe('plugin message')
+    expect(noticeOf('Your claude.ai usage limit has reset. Continue the task.', { kind: 'auto-continuation' })).toBe('continuation')
+    expect(noticeOf('進捗です', { kind: 'projects-relay' })).toBe('relayed message')
+    expect(noticeOf('観察結果です', { kind: 'observer' })).toBe('relayed message')
+    expect(noticeOf('活動の要約', { kind: 'observer-activity' })).toBe('relayed message')
+  })
+
+  test('the person\'s own prompt is a request, whatever it starts with', () => {
+    const own = ['composer', 'bridge', 'sdk', 'scheduled-trigger', 'slack-ping', 'channel', 'coordinator']
+    expect(own.filter(kind => noticeOf('<task-notification> が届かない原因を調べて', { kind }) !== null)).toEqual([])
+    expect(noticeOf('リポジトリ全体を監査して', { kind: 'plugin', name: 'voice-input', asUser: true })).toBe(null)
+    expect(noticeOf('リポジトリ全体を監査して', { kind: 'some-future-kind' })).toBe(null)
+  })
+
+  test('a prompt of unknown origin is told by the frame it starts with', () => {
+    expect(noticeOf('<task-notification> <task-id>a1</task-id>')).toBe('task notice')
+    expect(noticeOf('  <agent-message from="a1">\nreport')).toBe('agent message')
+    expect(noticeOf('Another Claude session sent a message:\n<agent-message from="a1">\nreport')).toBe('agent message')
+    expect(noticeOf('The voice-notify plugin sent a message:\nhi', { kind: 'unclassified' })).toBe('plugin message')
+    expect(noticeOf('この通知は何？')).toBe(null)
+    expect(noticeOf('<agent-messages> とは何？')).toBe(null)
+    expect(noticeOf('次の文を訳して: The voice plugin sent a message:')).toBe(null)
+  })
+
+  test('a turn finds its prompt\'s origin among those submitted since the last', () => {
+    const composer = { kind: 'composer' }
+    const peer = { kind: 'peer' }
+    const plugin = { kind: 'plugin', name: 'voice' }
+    expect(originOf('hi', [{ text: 'hi', origin: composer }])).toBe(composer)
+    // A plugin's prompt starts its turn under the plugin's frame.
+    expect(originOf('The voice plugin sent a message:\nhi there', [{ text: 'hi there', origin: plugin }])).toBe(plugin)
+    // The latest wins; one delivered into a running turn matches nothing.
+    expect(originOf('OK', [{ text: 'OK', origin: peer }, { text: 'OK', origin: composer }])).toBe(composer)
+    expect(originOf('調べて', [{ text: 'report', origin: peer }])).toBeUndefined()
+    // Only a whole line after a frame counts, not any ending.
+    expect(originOf('はい', [{ text: 'い', origin: peer }])).toBeUndefined()
+    expect(originOf('調べて', [{ text: '', origin: peer }])).toBeUndefined()
+    expect(originOf('調べて', [])).toBeUndefined()
+  })
+
+  test('a turn not judged carries the previous level from before its mid-turn raise', () => {
+    expect(carried(null)).toBe(null)
+    expect(carried({ ...signals(), level: 'high', base: 'medium' })).toBe('medium')
+    expect(carried({ ...signals(), level: 'high', base: null })).toBe(null)
+    // State an older version saved has no `base`.
+    expect(carried({ ...signals(), level: 'high' })).toBe('high')
   })
 
   test('options come from the last numbered run, cleaned of markdown', () => {

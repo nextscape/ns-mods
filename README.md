@@ -21,7 +21,7 @@ mod は、Claude Code の中で動く関数フック（JavaScript / TypeScript�
 | [git-nudge](mods/git-nudge/) | git の遅れ（pull 忘れ）・置き忘れ・upstream が消えたブランチを知らせ、安全な取り込みと片付けを手伝う | git 2.29 以降。OS は問わない | 呼ばない |
 | [superpowers-progress](mods/superpowers-progress/) | Superpowers の作業の全体と現在地（計画名・工程・今のタスクと段階・進捗・判断）を会話の横のペインに出す | Superpowers の subagent-driven-development。Claude Code 2.1.314 で確認。OS は問わない | 呼ばない |
 
-実際に使って動作を確認した版は、effort-router が Claude Code 2.1.291、voice-notify・git-nudge・quality-router が 2.1.292 です（effort-router 0.11.0 と voice-notify 0.4.0 は、2.1.308 で検査とテストが通ることを確かめています）。CI では、最新の版に加えて、各 mod が対応する最も古い版（voice-notify は 2.1.299、superpowers-progress は 2.1.314、ほかは 2.1.287）でも検査とテストを回しています。
+実際に使って動作を確認した版は、effort-router が Claude Code 2.1.291、voice-notify・git-nudge・quality-router が 2.1.292 です（effort-router 0.12.0 は 2.1.287 と 2.1.319 で検査とテストが通ることを、voice-notify 0.4.0 は 2.1.308 で同じことを確かめています）。CI では、最新の版に加えて、各 mod が対応する最も古い版（voice-notify は 2.1.299、superpowers-progress は 2.1.314、ほかは 2.1.287）でも検査とテストを回しています。
 
 ## 導入
 

@@ -87,9 +87,58 @@ export function effortArg(args: string): string | null {
   return EFFORTS.includes(word) ? word : null
 }
 
-// A background task's completion notice is not the person's request.
-export function isNotice(text: string): boolean {
-  return /^\s*<task-notification>/.test(text)
+// A prompt that is not the person's request, by what it is: it carries on
+// the work before it, so the turn keeps that level and is not judged.
+export type Notice = 'task notice' | 'agent message' | 'plugin message' | 'continuation' | 'relayed message'
+
+// Where a prompt came from, as `prompt.submit` names it (PromptOrigin); a
+// plugin's names the plugin, and `asUser` when it sent the person's words.
+export type Origin = { readonly kind: string; readonly name?: string; readonly asUser?: boolean }
+
+const NOTICE_ORIGINS: Readonly<Record<string, Notice>> = {
+  'task-notification': 'task notice',
+  peer: 'agent message',
+  'peer-send-message': 'agent message',
+  'projects-relay': 'relayed message',
+  observer: 'relayed message',
+  'observer-activity': 'relayed message',
+  'auto-continuation': 'continuation',
+}
+
+// What a prompt that is not the person's request is, or null for a request.
+// The engine's origin settles it: the person's own (typed, from the SDK, the
+// bridge, a schedule, a channel, a plugin's `asUser`) is a request whatever it
+// starts with. A prompt of no known origin is told by the frame it starts with.
+export function noticeOf(text: string, origin?: Origin): Notice | null {
+  if (origin !== undefined && origin.kind !== 'unclassified') {
+    if (origin.kind === 'plugin') return origin.asUser === true ? null : 'plugin message'
+    return NOTICE_ORIGINS[origin.kind] ?? null
+  }
+  if (/^\s*<task-notification>/.test(text)) return 'task notice'
+  if (/^\s*(?:Another Claude session sent a message[^\n]*\n\s*)?<agent-message\b/.test(text)) return 'agent message'
+  if (/^\s*The \S+ plugin sent a message:/.test(text)) return 'plugin message'
+  return null
+}
+
+// The origin of the prompt a turn starts with, among those submitted since
+// the last turn began (the latest first): the one whose text is the turn's,
+// or its last lines under a frame ("The <name> plugin sent a message:\n…").
+// One delivered into a running turn matches no later turn.
+export function originOf<O>(text: string, submitted: ReadonlyArray<{ text: string; origin: O }>): O | undefined {
+  const turn = text.trim()
+  for (let i = submitted.length - 1; i >= 0; i--) {
+    const one = submitted[i]!.text.trim()
+    if (one !== '' && (turn === one || turn.endsWith(`\n${one}`))) return submitted[i]!.origin
+  }
+  return undefined
+}
+
+// The level a turn that is not judged carries on at: the previous turn's
+// before its mid-turn raise, so a raise counts once per judgment and does not
+// pass from turn to turn. State an older version saved has the level alone.
+export function carried(prev: TurnSignals | null): Level | null {
+  if (prev === null) return null
+  return prev.base === undefined ? prev.level : prev.base
 }
 
 export function rank(level: Level): number {
@@ -198,8 +247,8 @@ export function compose(
 }
 
 // `asked`: re-judged mid-turn from an AskUserQuestion answer. `notice`: a
-// background task's notice, which keeps the level before it. `manual`: the
-// person set the effort with /effort, which runs as set.
+// prompt that is not the person's request (noticeOf), which keeps the level
+// before it. `manual`: the person set the effort with /effort, which runs as set.
 export type Why = 'auto' | 'choice' | 'reply' | 'asked' | 'short' | 'notice' | 'manual' | 'unsure' | 'error'
 export type Decision = { level: Level | undefined; judged: Level | null; why: Why }
 

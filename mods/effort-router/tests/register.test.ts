@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, PromptOrigin } from 'claude-code'
 
 import { LABELS } from '../hooks/route'
 
@@ -30,6 +30,7 @@ function world(on: On, answers: Array<string | undefined | Error>) {
     if (answer instanceof Error) return { value: { isAnswered: false, reason: 'aborted', usage } } as never
     return { value: { isAnswered: true, text: answer ?? '', usage } } as never
   })
+  on('prompt.submit', async ($, e) => ({ text: e.text, origin: e.origin }))
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
   on('turn.step', async function* ($, e) {
     seen.sent.push(e.effort)
@@ -47,6 +48,9 @@ function world(on: On, answers: Array<string | undefined | Error>) {
 let ids = 0
 // One turn of `steps` model requests answering `texts` in turn; `between`
 // runs after the request at each index (tool calls arriving mid-turn).
+// With `origin`, the prompt is first submitted from there, as the engine
+// does before the turn starts; `submitted` is its text when the turn starts
+// under a frame ("The <name> plugin sent a message:").
 async function turn(
   $: Engine,
   text: string,
@@ -58,10 +62,13 @@ async function turn(
     model?: string
     steps?: number
     between?: (index: number) => Promise<unknown>
+    origin?: PromptOrigin
+    submitted?: string
   } = {},
 ) {
   const turnId = `t${++ids}`
   replies.splice(0, replies.length, ...(opts.texts ?? []))
+  if (opts.origin) await $.prompt.submit({ text: opts.submitted ?? text, wait: false, origin: opts.origin })
   await $.turn.start({ text, turnId })
   for (let index = 0; index < (opts.steps ?? 1); index++) {
     const stream = $.turn.step({
@@ -103,6 +110,17 @@ const effort = ($: Engine, args: string) =>
   })
 
 const LONG = 'この関数の命名だけ確認したいのですが問題ないでしょうか'
+const NOTICE = '<task-notification> <task-id>a1</task-id> <status>completed</status> </task-notification>'
+// A subagent's final report as a turn starts with it: long, and reading like
+// an audit, which the classifier would judge xhigh.
+const REPORT = [
+  '<agent-message from="a1b2c3">',
+  '[Subagent hand-back] The text below is the final report of a subagent this session delegated to. The report follows:',
+  '  ## 結論',
+  '  リポジトリ全体を監査し、差分をレビューしました。並行処理に競合の恐れがある箇所が3つあります。',
+  '</agent-message>',
+].join('\n')
+const fill = (n: number, level: string) => Array<string>(n).fill(level)
 
 describe('effort-router', () => {
   test('a fresh simple prompt runs at medium', async ($, on) => {
@@ -171,6 +189,86 @@ describe('effort-router', () => {
     expect(seen.inputs.length).toBe(1)
     expect(seen.sent).toEqual(['high', 'high'])
     expect(seen.status.at(-1)).toBe('high (task notice, kept)')
+  })
+
+  test('a subagent report keeps the level before it without classifying', async ($, on) => {
+    const seen = world(on, [label('medium'), label('xhigh')])
+    await turn($, LONG)
+    await turn($, REPORT, { origin: { kind: 'peer' } })
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.sent).toEqual(['medium', 'medium'])
+    expect(seen.status.at(-1)).toBe('medium (agent message, kept)')
+    const { text } = await run($, 'log')
+    expect(text).toContain('medium -> medium\tnotice agent message')
+  })
+
+  test('a subagent report is told by its frame when its origin is not known', async ($, on) => {
+    const seen = world(on, [label('medium'), label('xhigh')])
+    await turn($, LONG)
+    await turn($, REPORT)
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.sent).toEqual(['medium', 'medium'])
+  })
+
+  test("a plugin message keeps the level; one sent as the person's words is judged", async ($, on) => {
+    const seen = world(on, [label('medium'), label('xhigh')])
+    await turn($, LONG)
+    await turn($, 'The voice-notify plugin sent a message:\nリポジトリ全体を監査して', {
+      origin: { kind: 'plugin', name: 'voice-notify' },
+      submitted: 'リポジトリ全体を監査して',
+    })
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.status.at(-1)).toBe('medium (plugin message, kept)')
+    await turn($, 'リポジトリ全体を監査して', { origin: { kind: 'plugin', name: 'voice-input', asUser: true } })
+    expect(seen.inputs.length).toBe(2)
+    expect(seen.sent).toEqual(['medium', 'medium', 'xhigh'])
+  })
+
+  test('a continuation after the usage limit resets keeps the level', async ($, on) => {
+    const seen = world(on, [label('high'), label('low')])
+    await turn($, LONG)
+    await turn($, 'Your claude.ai usage limit has reset. Continue the task you were working on.', {
+      origin: { kind: 'auto-continuation' },
+    })
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.sent).toEqual(['high', 'high'])
+    expect(seen.status.at(-1)).toBe('high (continuation, kept)')
+  })
+
+  test("the person's own prompt is judged, whatever it starts with", async ($, on) => {
+    const seen = world(on, [label('medium'), label('high')])
+    await turn($, LONG)
+    await turn($, '<task-notification> が届かない原因を調べてください', { origin: { kind: 'composer' } })
+    expect(seen.inputs.length).toBe(2)
+    expect(seen.sent).toEqual(['medium', 'high'])
+  })
+
+  test('a delivery into a running turn does not mark the next prompt', async ($, on) => {
+    const seen = world(on, [label('medium'), label('high')])
+    await turn($, LONG, {
+      between: () => $.prompt.submit({ text: REPORT, wait: false, origin: { kind: 'peer' }, turnId: 'running' }),
+    })
+    await turn($, LONG)
+    expect(seen.inputs.length).toBe(2)
+    expect(seen.sent).toEqual(['medium', 'high'])
+  })
+
+  test('a notice carries the judged level, not the one raised mid-turn', async ($, on) => {
+    const seen = world(on, [label('low')])
+    await turn($, LONG, { steps: 12 })
+    await turn($, NOTICE, { steps: 12 })
+    await turn($, NOTICE)
+    expect(seen.sent).toEqual([...fill(10, 'low'), 'medium', 'medium', ...fill(10, 'low'), 'medium', 'medium', 'low'])
+    expect(seen.status.at(-1)).toBe('low (task notice, kept)')
+  })
+
+  test('a short prompt or a failed judgment after a raised turn carries the judged level', async ($, on) => {
+    const seen = world(on, [label('low'), new Error('api down')])
+    await turn($, LONG, { steps: 11 })
+    await turn($, '続けて')
+    await turn($, LONG)
+    expect(seen.sent).toEqual([...fill(10, 'low'), 'medium', 'low', 'low'])
+    expect(seen.status.at(-1)).toBe('low (error, kept)')
   })
 
   test('another model keeps its own effort, and is not judged once seen', async ($, on) => {
@@ -395,6 +493,22 @@ describe('effort-router', () => {
     const { sent } = world(on, ['High.'])
     await turn($, LONG)
     expect(sent).toEqual(['high'])
+  })
+
+  test("a subagent's own turn is not judged, and the main turn keeps counting its errors", async ($, on) => {
+    const seen = world(on, [label('medium'), label('xhigh')])
+    on('tool.call', async () => ({ result: { stdout: '', stderr: 'boom', interrupted: false }, isError: true }))
+    await turn($, LONG, {
+      steps: 4,
+      between: async index => {
+        // A background subagent starts its own turn while the main one runs.
+        if (index === 0) await $.turn.start({ text: 'Reply with the single word OK.', turnId: 'sub-1', agentId: 'agent-1' } as never)
+        if (index < 2) await $.tool.call({ tool: 'Bash', command: 'false' })
+      },
+    })
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.sent).toEqual(['medium', 'medium', 'high', 'high'])
+    expect(seen.status.at(-1)).toBe('medium → high (raised after 2 tool errors)')
   })
 
   test('subagent steps are left alone', async ($, on) => {

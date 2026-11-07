@@ -3,10 +3,12 @@ export type Level = 'low' | 'medium' | 'high' | 'xhigh'
 // One numbered or lettered choice the answer offered ("2. テストを追加する").
 export type Option = { key: string; text: string }
 
-// What one main-thread turn left behind, for judging the next one.
-// `options` and `asks` may be absent in state an older version saved.
+// What one main-thread turn left behind, for judging the next one: `level`
+// as its last request ran, `base` the same before any mid-turn raise.
+// `options`, `asks` and `base` may be absent in state an older version saved.
 export type TurnSignals = {
   level: Level | null
+  base?: Level | null
   steps: number
   tools: number
   toolErrors: number

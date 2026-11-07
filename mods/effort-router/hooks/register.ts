@@ -9,21 +9,23 @@ import {
   JUDGE_TIMEOUT_MS,
   asLevel,
   asksOf,
+  carried,
   compose,
   decide,
   effortArg,
   fromAsked,
   head,
-  isNotice,
   isRouted,
   levelOf,
+  noticeOf,
   optionsOf,
+  originOf,
   plan,
   raise,
   rank,
   tail,
 } from './route'
-import type { Asked, Decision, Route } from './route'
+import type { Asked, Decision, Notice, Origin, Route } from './route'
 
 // Picks the main thread's effort per prompt: low / medium / high / xhigh,
 // judged from the request and the previous turn's signals. A reply that
@@ -31,7 +33,9 @@ import type { Asked, Decision, Route } from './route'
 // reply to a question is judged against the question; an AskUserQuestion
 // answer is judged mid-turn the same way. A turn that runs long or hits
 // errors goes up one level, so a judgment that was too low corrects itself.
-// A background task's notice keeps the level before it. Only the routed
+// A prompt that is not the person's request (a background task's notice, a
+// subagent's report, a plugin's message, a continuation) keeps the level
+// before it, as it was before any mid-turn raise. Only the routed
 // models (isRouted: Opus, Sonnet and Haiku 5.5+, Fable and Mythos 5.1+) are touched;
 // on them Claude Code keeps the prompt cache across effort changes. The model
 // is never changed. A typed /effort runs as set for one turn; to pin a level,
@@ -41,6 +45,8 @@ const LOG_KEY = 'log'
 const MODE_KEY = 'mode'
 const LOG_LIMIT = 200
 const RECENT = 3
+// Prompts kept for the next turn to find its own among (originOf).
+const SUBMITTED = 10
 
 const prevTurn = atom({ plugin: 'effort-router', key: 'prev' } as const, null)
 const recentLevels = atom({ plugin: 'effort-router', key: 'recent' } as const, [])
@@ -59,6 +65,10 @@ type Turn = Decision & {
   bumps: number
   raised: number
   applied: Level | null
+  // `applied` before any raise: what a turn that is not judged carries on at.
+  base: Level | null
+  // Set when the prompt is not the person's request: what it is.
+  notice?: Notice
   // Set by /effort: the session's effort goes as is, unjudged, unraised;
   // `shown` is the effort the status line last showed for it.
   manual: boolean
@@ -77,6 +87,7 @@ const fresh = {
   bumps: 0,
   raised: 0,
   applied: null,
+  base: null,
   manual: false,
 }
 
@@ -88,6 +99,7 @@ type LogEntry = {
   judged: Level | null
   level: Level | null
   why: Decision['why']
+  notice?: Notice
   picked?: string | null
   raised?: number
   steps: number
@@ -110,6 +122,8 @@ export const register: Register = on => {
   let mainModel: string | undefined
   // A /effort typed between turns: the next turn runs as set.
   let manualNext = false
+  // Prompts submitted since the last turn began, with where each came from.
+  let submitted: Array<{ text: string; origin: Origin | undefined }> = []
   const turns = new Map<string, Turn>()
 
   on('session.start', async ($, e, next) => {
@@ -169,8 +183,23 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // Where each prompt came from, for the turn it starts (originOf). Noted
+  // before `next`: a prompt submitted while idle starts its turn within it.
+  on('prompt.submit', async ($, e, next) => {
+    submitted = [...submitted, { text: e.text, origin: e.origin }].slice(-SUBMITTED)
+    return next(e)
+    // Noting only watches: if it throws, the prompt goes as submitted.
+  }).catch(($, e, next) => next(e))
+
   on('turn.start', async ($, e, next) => {
-    if (!isOn || e.text === '') return next(e)
+    // A subagent's own turn starts here too, naming its agentId (which older
+    // engines' types leave out): not the main thread's, so not judged.
+    if ((e as { agentId?: string }).agentId !== undefined || e.text === '') return next(e)
+    // This turn's prompt is among those submitted since the last turn began;
+    // the rest were delivered into that one.
+    const origin = originOf(e.text, submitted)
+    submitted = []
+    if (!isOn) return next(e)
     // Before the first request names the model, ask the session for it.
     if (mainModel === undefined) mainModel = await sessionModel($)
     // Another model is in use: no judgment, and no classifier call, for it.
@@ -180,14 +209,16 @@ export const register: Register = on => {
     }
 
     const prev = await read($, prevTurn)
-    const prevLevel = prev?.level ?? null
+    // A turn not judged carries this on: the last level judged, unraised.
+    const prevLevel = carried(prev)
     if (manualNext) {
       manualNext = false
       current = e.turnId
       turns.set(e.turnId, { level: undefined, judged: null, why: 'manual', ...fresh, manual: true, request: e.text, picked: null })
       return next(e)
     }
-    const route = isNotice(e.text) ? null : plan(e.text, prev)
+    const notice = noticeOf(e.text, origin)
+    const route = notice === null ? plan(e.text, prev) : null
     let decision: Decision
     let picked: string | null = null
     if (route === null) {
@@ -200,8 +231,8 @@ export const register: Register = on => {
       if (route.selected.length > 0) picked = route.selected.map(one => one.key).join(',')
     }
     current = e.turnId
-    turns.set(e.turnId, { ...decision, ...fresh, request: e.text, picked })
-    if (decision.level !== undefined) show($, isOn, { ...decision, picked, isSession: false })
+    turns.set(e.turnId, { ...decision, ...fresh, request: e.text, picked, ...(notice === null ? {} : { notice }) })
+    if (decision.level !== undefined) show($, isOn, { ...decision, picked, notice, isSession: false })
     return next(e)
   })
 
@@ -261,6 +292,7 @@ export const register: Register = on => {
     // it once it is known, as the request carries it.
     if (turn.manual) {
       turn.applied = asLevel(e.effort)
+      turn.base = turn.applied
       const set = e.effort === undefined ? undefined : String(e.effort)
       if (set !== undefined && set !== turn.shown) {
         turn.shown = set
@@ -273,8 +305,10 @@ export const register: Register = on => {
     const base = e.effort === undefined || !isRouted(e.model) ? null : (turn.level ?? asLevel(e.effort))
     if (base === null) {
       turn.applied = asLevel(e.effort)
+      turn.base = turn.applied
       return yield* answered(turn, next(e))
     }
+    turn.base = base
     const { level, bumps, added, raisedBy } = raise(base, turn.steps - turn.since, turn.toolErrors - turn.sinceErrors, turn.bumps)
     if (added > 0) {
       turn.raised += added
@@ -300,6 +334,7 @@ export const register: Register = on => {
       const options = final.length > 0 || turn.offer === undefined ? final : optionsOf(turn.offer)
       const signals: TurnSignals = {
         level: turn.applied,
+        base: turn.base,
         steps: turn.steps,
         tools: turn.tools,
         toolErrors: turn.toolErrors,
@@ -319,6 +354,7 @@ export const register: Register = on => {
         judged: turn.judged,
         level: turn.applied,
         why: turn.why,
+        ...(turn.notice === undefined ? {} : { notice: turn.notice }),
         picked: turn.picked,
         raised: turn.raised,
         steps: turn.steps,
@@ -377,6 +413,8 @@ async function savedEffort($: EngineInterface, model: string | undefined): Promi
 
 type View = Pick<Decision, 'level' | 'judged' | 'why'> & {
   picked?: string | null
+  // Set when the prompt is not the person's request: what it is.
+  notice?: Notice | null
   isSession: boolean
   from?: Level | null
   // Set when the turn was raised: what ran long ("10 requests").
@@ -398,7 +436,7 @@ function show($: EngineInterface, isOn: boolean, view?: View) {
     if (view.why === 'reply') notes.push('reply to question')
     if (view.why === 'asked') notes.push(`asked: ${view.picked ?? ''}`.trim())
     if (view.why === 'short') notes.push('short prompt, kept')
-    if (view.why === 'notice') notes.push('task notice, kept')
+    if (view.why === 'notice') notes.push(`${view.notice ?? 'task notice'}, kept`)
     if (view.why === 'unsure' || view.why === 'error') notes.push(`${view.why}, kept`)
   }
   const from = view.from && view.from !== view.level ? `${view.from} → ` : ''
@@ -420,7 +458,8 @@ async function summarize($: EngineInterface): Promise<string> {
   )
   const recent = log.slice(-10).map(one => {
     const judged = one.judged && one.judged !== one.level ? ` (judged ${one.judged})` : ''
-    const why = `${one.picked ? `${one.why} ${one.picked}` : one.why}${one.raised ? ` raised ${one.raised}` : ''}`
+    const what = one.notice ? `${one.why} ${one.notice}` : one.picked ? `${one.why} ${one.picked}` : one.why
+    const why = `${what}${one.raised ? ` raised ${one.raised}` : ''}`
     return `  ${one.prev ?? '-'} -> ${one.level ?? '-'}${judged}\t${why}\t${one.steps} steps\t${Math.round(one.durationMs / 1000)}s\t${one.head}`
   })
   return [`${log.length} turns logged`, ...table, 'recent (prev -> level):', ...recent].join('\n')
