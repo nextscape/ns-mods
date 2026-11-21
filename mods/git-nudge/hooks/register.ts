@@ -1,16 +1,18 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Settings, Snapshot } from '../types'
+import type { LocalBranch, Settings, Snapshot, Start } from '../types'
 import {
   BAND_ROWS,
   MINUTE,
   RESOLVED,
   TIDY_HINT_MIN,
   ago,
+  localDay,
   noticeKey,
   notices,
   pullBlocker,
+  startOf,
   statusLine,
   tellText,
 } from './judge'
@@ -19,21 +21,32 @@ import {
   DEFAULTS,
   MARKERS,
   MIN_GIT,
+  REF_FORMAT,
   absolutePath,
-  files,
   firstLine,
   isAuthError,
   isSupported,
   lines,
   parseBranches,
   parseConfig,
+  parseRefs,
   parseRemoteHeads,
   parseStash,
   parseStatus,
   parseVersion,
   prunableWorktrees,
 } from './parse'
-import { deletedReport, describeTidy, planTidy, tidyCandidates, withGoneUpstream } from './tidy'
+import {
+  countTidy,
+  deletedReport,
+  describeTidy,
+  goneBranches,
+  planTidy,
+  stillGone,
+  tidyCandidates,
+  trackingRef,
+  withGoneUpstream,
+} from './tidy'
 
 // Keeps an eye on the session's git repository: how far it is from its
 // upstream, what was left behind (uncommitted changes, stashes, a half-done
@@ -62,8 +75,8 @@ type FetchWhen = 'start' | 'timer' | 'force' | false
 type Ctx = {
   off: boolean
   interactive: boolean
-  // undefined until checked; null when git could not be run.
-  version: readonly [number, number] | null | undefined
+  // null until `git version` has answered: a run that failed is tried again.
+  version: readonly [number, number] | null
   root: string | null
   // Why the mod is doing nothing, for /git-nudge; null while it works.
   reason: string | null
@@ -73,13 +86,24 @@ type Ctx = {
   queue: Promise<void>
   // Set while a pull runs, so a second press does not merge again.
   pulling: boolean
+  // A turn is running. busyState says so to the band; a command reads this
+  // one, because what a hook reads from $.state can be older than a turn that
+  // started while the hook waited (on a question, say).
+  busy: boolean
   timer: Timer | null
   interval: number
   authStopped: boolean
   failed: { at: number; auth: boolean } | null
   // What Claude was last told; null when nothing.
   told: string | null
+  // What the first look at this repository found. Kept here as well as in
+  // $.state: /clear, /resume and /branch empty $.state, and what was left
+  // from before the session is still the same.
+  start: Start | null
+  // The band may show the tidy hint: no session has shown it today.
   tidyHint: boolean
+  // The band has shown it, and the store has the day.
+  hinted: boolean
   // git status timeouts in a row; /git-nudge suggests turning the mod off.
   slow: number
 }
@@ -93,19 +117,22 @@ export const register: Register = on => {
   const ctx: Ctx = {
     off: false,
     interactive: true,
-    version: undefined,
+    version: null,
     root: null,
     reason: null,
     settings: { ...DEFAULTS },
     problems: [],
     queue: Promise.resolve(),
     pulling: false,
+    busy: false,
     timer: null,
     interval: 0,
     authStopped: false,
     failed: null,
     told: null,
+    start: null,
     tidyHint: false,
+    hinted: false,
     slow: 0,
   }
 
@@ -122,7 +149,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // /clear, /resume and /branch reset $.state: look again, and tell Claude afresh.
+  // /clear, /resume and /branch reset $.state: look again, and tell Claude
+  // afresh. What the first look found stays (ctx.start).
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     ctx.told = null
     $.clock.after(0, () => refresh($, ctx, false))
@@ -130,12 +158,14 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
+    ctx.busy = true
     await update($, busyState, () => true)
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
+      ctx.busy = false
       await update($, busyState, () => false)
       // Claude may have committed or pushed: look again, without fetching.
       $.clock.after(0, () => refresh($, ctx, false))
@@ -177,6 +207,17 @@ export const register: Register = on => {
       .filter(notice => !dismissed.includes(noticeKey(notice)))
       .slice(0, BAND_ROWS)
     if (shown.length === 0) return theirs
+    if (!ctx.hinted && shown.some(notice => notice.id === 'tidy')) {
+      // The hint is on screen now, so no other session shows it again today.
+      // Marking the day any earlier would use it up unseen: the band may be
+      // off, have no row left for it, or not be drawn on this surface.
+      ctx.hinted = true
+      try {
+        await $.store.set(hintKey(snap.root), localDay(now))
+      } catch {
+        // Not marked: another session shows the hint again, no more.
+      }
+    }
     const { Box, Text, Button } = $.ui.resolve(e)
     // Letter hotkeys only: a digit on a band button fires from an empty
     // prompt, so a typed "1" could pull.
@@ -197,7 +238,7 @@ export const register: Register = on => {
                   label: '閉じる',
                   hotkey: 'x',
                   plain: true,
-                  onPress: () => update($, dismissedState, list => [...list, ...shown.map(noticeKey)]),
+                  onPress: () => update($, dismissedState, list => [...new Set([...list, ...shown.map(noticeKey)])]),
                 }),
               ]
             : []),
@@ -250,6 +291,18 @@ async function lookSafely($: EngineInterface, ctx: Ctx, when: FetchWhen): Promis
   } catch (error) {
     $.ui.log(`git-nudge: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
   }
+  // /git-nudge off may have come while this look ran (a fetch takes a while):
+  // clear what the look drew and stop the timer it may have started.
+  if (ctx.off) await rest($, ctx)
+}
+
+// What the remote-tracking refs of these branches point at now. A ref that
+// does not exist is left out; null when git could not say.
+async function trackingOids($: EngineInterface, root: string, branches: LocalBranch[]): Promise<Map<string, string> | null> {
+  const refs = branches.map(trackingRef).filter((ref): ref is string => ref !== null)
+  if (refs.length === 0) return new Map()
+  const listed = await git($, root, ['for-each-ref', `--format=${REF_FORMAT}`, ...refs])
+  return listed.code === 0 ? parseRefs(listed.out) : null
 }
 
 // Batch mode keeps ssh from asking for a host key or a passphrase, unless the
@@ -262,15 +315,23 @@ async function sshArgs($: EngineInterface, root: string): Promise<string[]> {
 
 async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void> {
   const cwd = await $.session.cwd()
-  if (ctx.version === undefined) {
+  if (ctx.version === null) {
+    // Only an answer is kept. git that did not start or timed out once (a
+    // cold disk, a virus scan) is asked again at the next look.
     const version = await git($, cwd, ['version'])
     ctx.version = version.code === 0 ? parseVersion(version.out) : null
   }
-  if (ctx.version === null) return idle($, ctx, 'git が見つかりません')
+  if (ctx.version === null) return idle($, ctx, 'git を実行できませんでした（入っていないか、応答がありません）')
   if (!isSupported(ctx.version)) {
     return idle($, ctx, `git ${MIN_GIT.join('.')} 以降が必要です（今は ${ctx.version.join('.')}）`)
   }
   const top = await git($, cwd, ['rev-parse', '--show-toplevel'])
+  if (top.code === -1) {
+    // git did not answer, which says nothing about where the session is:
+    // keep what is shown, and what the session has kept of this repository.
+    $.ui.log(`git-nudge: git rev-parse failed: ${firstLine(top.err)}`, { to: 'debug' })
+    return
+  }
   if (top.code !== 0) return idle($, ctx, 'git リポジトリの中ではありません')
   const root = top.out.trim()
   const config = await git($, root, ['config', '--get-regexp', '^git-nudge\\.'])
@@ -286,7 +347,9 @@ async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void
     ctx.told = null
     ctx.authStopped = false
     ctx.failed = null
+    ctx.start = null
     ctx.tidyHint = false
+    ctx.hinted = false
     await update($, snapshotState, () => null)
     await update($, startState, () => null)
   }
@@ -306,15 +369,18 @@ async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void
   ctx.slow = 0
   let parsed = parseStatus(status.out)
   const remote = branches.find(branch => branch.name === parsed.branch.head)?.remote ?? null
-  let goneNames = prev?.goneNames ?? null
-  let tidyCount = prev?.tidyCount ?? null
+  let gone = prev?.gone ?? null
+  // Whether ls-remote listed the remote's branches in this look.
+  let listed = false
 
   if (when === 'force') ctx.authStopped = false
   const wants =
     when === 'force' ||
     (when === 'start' && settings.fetchOnStart) ||
     (when === 'timer' && settings.fetchInterval > 0)
-  if (wants && remote !== null && !ctx.authStopped && (when === 'force' || (await fetchDue($, root, settings, now)))) {
+  // Not once /git-nudge off has come, even if this look began before it.
+  const may = wants && remote !== null && !ctx.authStopped && !ctx.off
+  if (may && (when === 'force' || (await fetchDue($, root, settings, now)))) {
     const ssh = await sshArgs($, root)
     const fetched = await git(
       $,
@@ -325,11 +391,11 @@ async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void
     if (fetched.code === 0) {
       ctx.failed = null
       await $.store.set(fetchKey(root), now)
-      const listed = await git($, root, [...ssh, 'ls-remote', '--heads', remote], { remote: true })
-      if (listed.code === 0) {
-        const heads = parseRemoteHeads(listed.out)
-        goneNames = withGoneUpstream(branches, heads, remote).map(branch => branch.name)
-        tidyCount = tidyCandidates(branches, heads, remote).length
+      const heads = await git($, root, [...ssh, 'ls-remote', '--heads', remote], { remote: true })
+      if (heads.code === 0) {
+        const lost = withGoneUpstream(branches, parseRemoteHeads(heads.out), remote)
+        gone = goneBranches(lost, await trackingOids($, root, lost))
+        listed = true
       }
       status = await git($, root, STATUS_ARGS)
       if (status.code === 0) parsed = parseStatus(status.out)
@@ -340,6 +406,15 @@ async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void
       $.ui.log(`git-nudge: fetch failed: ${firstLine(fetched.err)}`, { to: 'debug' })
     }
   }
+  // Without a fresh list from the remote, the one kept is still brought up to
+  // date from what is here: a branch deleted since (by tidy, say) or pushed
+  // again (Claude may just have done so) is no longer gone.
+  if (gone !== null && !listed) {
+    const names = new Set(gone.map(one => one.name))
+    const kept = branches.filter(branch => names.has(branch.name))
+    gone = stillGone(gone, branches, await trackingOids($, root, kept))
+  }
+  const tidyCount = gone === null ? null : countTidy(gone, branches)
 
   const stash = parseStash((await git($, root, ['stash', 'list', '--format=%ct'])).out)
   const markers = await git($, root, [
@@ -366,21 +441,27 @@ async function look($: EngineInterface, ctx: Ctx, when: FetchWhen): Promise<void
     stash,
     operation,
     lockSince: locked ? (prev?.lockSince ?? now) : null,
-    goneNames,
+    gone,
     tidyCount,
     fetch: { lastOk: typeof lastOk === 'number' ? lastOk : null, failed: ctx.failed },
     at: now,
   }
-  await update($, snapshotState, () => snapshot)
-  if ((await read($, startState)) === null) {
-    await update($, startState, () => ({ ahead: parsed.branch.ahead ?? 0, dirty: files(parsed.changes) }))
-  }
+  // What the band draws from is settled before the snapshot is written, since
+  // that write redraws it. The tidy hint may show when no session has shown
+  // it today; the band marks the day once it does (see ui.render).
   if (!ctx.tidyHint && tidyCount !== null && tidyCount >= TIDY_HINT_MIN) {
-    const today = new Date(now).toISOString().slice(0, 10)
-    if ((await $.store.get(hintKey(root))) !== today) {
-      ctx.tidyHint = true
-      await $.store.set(hintKey(root), today)
-    }
+    ctx.tidyHint = (await $.store.get(hintKey(root))) !== localDay(now)
+  }
+  const stored = await read($, startState)
+  const start = stored ?? ctx.start ?? startOf(parsed)
+  ctx.start = start
+  if (stored === null) await update($, startState, () => start)
+  await update($, snapshotState, () => snapshot)
+  // A closed notice that has gone away is no longer closed: when the same
+  // state comes back, it shows again.
+  const live = new Set(notices(snapshot, start, settings, now, true).map(noticeKey))
+  if ((await read($, dismissedState)).length > 0) {
+    await update($, dismissedState, list => list.filter(key => live.has(key)))
   }
   $.ui.status(statusLine(snapshot, settings, now))
 }
@@ -435,9 +516,17 @@ async function tell($: EngineInterface, ctx: Ctx): Promise<string | null> {
   return said
 }
 
+const STOPPED = 'git-nudge は止まっています（/git-nudge on で再開）'
+
+// Whether a turn is running now. ctx.busy is this module's own and current;
+// busyState covers a reload in the middle of a turn, which starts ctx over.
+async function turnRunning($: EngineInterface, ctx: Ctx): Promise<boolean> {
+  return ctx.busy || (await read($, busyState))
+}
+
 // Fast-forwards to the upstream when that is safe now, and says what happened.
 async function pull($: EngineInterface, ctx: Ctx): Promise<string> {
-  if (ctx.off) return 'git-nudge は止まっています（/git-nudge on で再開）'
+  if (ctx.off) return STOPPED
   if (ctx.pulling) return '取り込みの途中です。終わるまでお待ちください'
   ctx.pulling = true
   try {
@@ -450,8 +539,9 @@ async function pull($: EngineInterface, ctx: Ctx): Promise<string> {
 const BUSY = 'Claude の作業中は取り込めません。作業が終わってから実行してください'
 
 async function fastForward($: EngineInterface, ctx: Ctx): Promise<string> {
-  if (await read($, busyState)) return BUSY
+  if (await turnRunning($, ctx)) return BUSY
   // Fetch first, as git pull does: the last look may have skipped its fetch.
+  // When that fetch fails, pullBlocker says so and nothing is merged.
   await refresh($, ctx, 'force')
   const snap = await read($, snapshotState)
   if (snap === null) return ctx.reason ?? '状態を取得できませんでした'
@@ -459,7 +549,7 @@ async function fastForward($: EngineInterface, ctx: Ctx): Promise<string> {
   if (blocker !== null) return `取り込みませんでした: ${blocker}`
   const before = (await git($, snap.root, ['rev-parse', '--short', 'HEAD'])).out.trim()
   // The fetch can take a while: a turn may have started meanwhile.
-  if (await read($, busyState)) return BUSY
+  if (await turnRunning($, ctx)) return BUSY
   const merged = await git($, snap.root, ['merge', '--ff-only', '@{u}'], { timeoutMs: REMOTE_TIMEOUT })
   const after = (await git($, snap.root, ['rev-parse', '--short', 'HEAD'])).out.trim()
   await refresh($, ctx, false)
@@ -473,9 +563,15 @@ async function pullFromBand($: EngineInterface, ctx: Ctx): Promise<void> {
   $.ui.log(`git-nudge: ${message}`)
 }
 
+const TIDY_BUSY = 'Claude の作業中は片付けできません。作業が終わってから実行してください'
+
 // Lists branches whose upstream is gone, asks, and deletes the merged ones.
+// Like pull, not while the mod is off or Claude works: the command runs at
+// once, and a branch deleted under a turn fails the git command after it.
 async function tidy($: EngineInterface, ctx: Ctx): Promise<string> {
+  if (ctx.off) return STOPPED
   if (!ctx.interactive) return '対話できない環境では片付けできません'
+  if (await turnRunning($, ctx)) return TIDY_BUSY
   const cwd = await $.session.cwd()
   const top = await git($, cwd, ['rev-parse', '--show-toplevel'])
   if (top.code !== 0) return 'git リポジトリの中ではありません'
@@ -504,6 +600,8 @@ async function tidy($: EngineInterface, ctx: Ctx): Promise<string> {
     return `${summary}\n\n片付けを取りやめました（確認できませんでした）`
   }
   if (answer !== yes) return `${summary}\n\n片付けを取りやめました`
+  // The question may have stayed open a while: a turn may have started meanwhile.
+  if (await turnRunning($, ctx)) return `${summary}\n\n${TIDY_BUSY}`
   const done: typeof plan.deletable = []
   const failed: Array<{ name: string; message: string }> = []
   for (const branch of plan.deletable) {

@@ -12,6 +12,11 @@ export const DEFAULTS: Settings = {
   stashAgeDays: 7,
 }
 
+// The longest fetchInterval, in minutes. A timer cannot wait longer than
+// 2^31-1 ms (about 24 days), and waiting longer than a day is no better than
+// turning the timer off.
+export const MAX_FETCH_INTERVAL = 24 * 60
+
 // The fields `git for-each-ref` prints per local branch, tab-separated (git
 // refuses control characters in ref names).
 export const BRANCH_FORMAT =
@@ -36,12 +41,29 @@ export function files(changes: Changes): number {
   return changes.tracked + changes.untracked + changes.conflicted
 }
 
+// A short stand-in for a list of lines, to tell whether the list changed
+// (their count and an FNV-1a hash); '' for an empty list.
+function fingerprint(list: string[]): string {
+  if (list.length === 0) return ''
+  const text = list.join('\n')
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index++) {
+    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193)
+  }
+  return `${list.length}:${(hash >>> 0).toString(16)}`
+}
+
 // `git status --porcelain=v2 --branch`
 export function parseStatus(out: string): Status {
+  let oid: string | null = null
   const branch: Status['branch'] = { head: null, upstream: null, ahead: null, behind: null }
   const changes: Changes = { tracked: 0, untracked: 0, conflicted: 0 }
+  const entries: string[] = []
   for (const line of lines(out)) {
-    if (line.startsWith('# branch.head ')) {
+    if (line.startsWith('# branch.oid ')) {
+      const value = line.slice('# branch.oid '.length)
+      oid = value === '(initial)' ? null : value
+    } else if (line.startsWith('# branch.head ')) {
       const head = line.slice('# branch.head '.length)
       branch.head = head === '(detached)' ? null : head
     } else if (line.startsWith('# branch.upstream ')) {
@@ -54,13 +76,16 @@ export function parseStatus(out: string): Status {
       }
     } else if (line.startsWith('1 ') || line.startsWith('2 ')) {
       changes.tracked += 1
+      entries.push(line)
     } else if (line.startsWith('u ')) {
       changes.conflicted += 1
+      entries.push(line)
     } else if (line.startsWith('? ')) {
       changes.untracked += 1
+      entries.push(line)
     }
   }
-  return { branch, changes }
+  return { oid, branch, changes, dirtyKey: fingerprint(entries) }
 }
 
 // `git stash list --format=%ct`: one commit time (seconds) per stash.
@@ -120,7 +145,13 @@ export function parseConfig(out: string): { settings: Settings; problems: string
       if (flag === null) problems.push(`${key}=${value} は true / false ではないので無視しました`)
       else set[name] = flag
     } else if (/^\d+$/.test(value)) {
-      set[name] = Number(value)
+      const amount = Number(value)
+      if (name === 'fetchInterval' && amount > MAX_FETCH_INTERVAL) {
+        problems.push(`${key}=${value} は上限を超えるので ${MAX_FETCH_INTERVAL}（分）にしました`)
+        set[name] = MAX_FETCH_INTERVAL
+      } else {
+        set[name] = amount
+      }
     } else {
       problems.push(`${key}=${value} は 0 以上の整数ではないので無視しました`)
     }
@@ -136,6 +167,19 @@ export function parseRemoteHeads(out: string): Set<string> {
     if (ref !== undefined && ref.startsWith('refs/heads/')) names.add(ref.slice('refs/heads/'.length))
   }
   return names
+}
+
+// What `git for-each-ref` prints to tell which commit a ref points at.
+export const REF_FORMAT = '%(refname)%09%(objectname)'
+
+// `git for-each-ref --format=<REF_FORMAT> <ref>...`
+export function parseRefs(out: string): Map<string, string> {
+  const refs = new Map<string, string>()
+  for (const line of lines(out)) {
+    const [name = '', oid = ''] = line.split('\t')
+    if (name !== '' && oid !== '') refs.set(name, oid)
+  }
+  return refs
 }
 
 // `git for-each-ref --format=<BRANCH_FORMAT> refs/heads`

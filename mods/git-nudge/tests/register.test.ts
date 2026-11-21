@@ -2,11 +2,12 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { RESOLVED } from '../hooks/judge'
+import { RESOLVED, localDay } from '../hooks/judge'
 import { FIXTURES } from './fixtures'
 
 const NOW = Date.UTC(2026, 9, 7, 12)
 const MINUTE = 60_000
+const DAY = 24 * 60 * MINUTE
 const ROOT = 'D:/work/repo'
 const FETCH =
   '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 -c core.sshCommand=ssh -o BatchMode=yes fetch --quiet --no-auto-maintenance origin'
@@ -25,6 +26,9 @@ const CLEAN: Replies = {
   version: { out: 'git version 2.49.0.windows.1\n' },
   'rev-parse --show-toplevel': { out: `${ROOT}\n` },
   'config --get-regexp': { code: 1 },
+  // What the remote-tracking refs of the branches with a gone upstream point at
+  // (listed before the key below, which its command line contains too).
+  'for-each-ref --format=%(refname)': {},
   'for-each-ref --format=': { out: `main\tb7bfd6b\torigin\trefs/heads/main\t${ROOT}\n` },
   'status --porcelain=v2': { out: FIXTURES['status-insync'] },
   'fetch --quiet': {},
@@ -37,9 +41,22 @@ const CLEAN: Replies = {
 function world(
   on: On,
   overrides: Replies = {},
-  options: { answer?: string; store?: Record<string, unknown>; files?: string[]; env?: Record<string, string> } = {},
+  options: {
+    answer?: string
+    // Runs while the question is open, before it is answered.
+    onAsk?: () => unknown
+    store?: Record<string, unknown>
+    files?: string[]
+    env?: Record<string, string>
+  } = {},
 ) {
-  mock.store(on, options.store)
+  // The mod's store, kept here so a test can read what the mod wrote.
+  const store = new Map<string, unknown>(Object.entries(options.store ?? {}))
+  on('store.get', async ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', async ($, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
   mock.env(on, options.env ?? {})
   const clock = mock.clock(on, { now: NOW })
   // Arrays are answered by shift(): copy them, so a shared constant such as
@@ -93,10 +110,26 @@ function world(
   on('tool.call', async ($, e) => {
     const { questions } = e as unknown as { questions: Array<{ question: string }> }
     seen.asked.push(questions[0]!.question)
+    if (options.onAsk !== undefined) await options.onAsk()
     if (options.answer === undefined) return { deny: 'dismissed' }
     return { result: { answers: { [questions[0]!.question]: options.answer } } }
   })
-  return { seen, clock }
+  return { seen, clock, store }
+}
+
+// Holds $.state here instead of in the kit, so a test can empty it as /clear,
+// /resume and /branch do.
+function ownState(on: On) {
+  const cells = new Map<string, { value: unknown; version: number }>()
+  const none = { value: undefined, version: 0 }
+  on('state.get', async ($, e) => ({ value: cells.get(e.key) ?? none }))
+  on('state.set', async ($, e) => {
+    const { version } = cells.get(e.key) ?? none
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false as const, version } }
+    cells.set(e.key, { value: e.value, version: version + 1 })
+    return { value: { isSet: true as const, version: version + 1 } }
+  })
+  return { empty: () => cells.clear() }
 }
 
 // Lets timer callbacks (and the git calls they make) finish.
@@ -295,6 +328,46 @@ describe('looking at the repository', () => {
     expect(seen.git.some(line => line.includes('core.sshCommand=ssh'))).toBe(false)
     expect(fetches(seen.git)).toBe(1)
   })
+
+  test('git that could not be run at the first look is tried again at the next', async ($, on) => {
+    const { clock } = world(on, { version: [{ deny: 'timed out' }, { out: 'git version 2.49.0.windows.1\n' }] })
+    await begin($, clock)
+    expect((await run($)).text).toContain(`リポジトリ: ${ROOT}`)
+  })
+
+  test('git that cannot be run does nothing, and /git-nudge says why', async ($, on) => {
+    const { seen, clock } = world(on, { version: { deny: 'spawn git ENOENT' } })
+    await begin($, clock)
+    expect(fetches(seen.git)).toBe(0)
+    expect((await run($)).text).toBe('何もしていません: git を実行できませんでした（入っていないか、応答がありません）')
+  })
+
+  test('a look that times out finding the repository keeps what is shown', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'rev-parse --show-toplevel': [{ out: `${ROOT}\n` }, { deny: 'timed out' }],
+      'status --porcelain=v2': BEHIND,
+    })
+    await begin($, clock)
+    await turn($, clock)
+    expect(seen.status.at(-1)).toBe('main ↓2 · fetch たった今')
+  })
+
+  test('an upstream pushed again is no longer gone at the next look, without a fetch', async ($, on) => {
+    const { seen, clock } = world(on, {
+      // The remote-tracking ref when ls-remote ran, then after the push.
+      'for-each-ref --format=%(refname)': [
+        { out: 'refs/remotes/origin/feat-x\tabc\n' },
+        { out: 'refs/remotes/origin/feat-x\tdef\n' },
+      ],
+      'for-each-ref --format=': { out: `feat-x\tabc\torigin\trefs/heads/feat-x\t${ROOT}\n` },
+      'status --porcelain=v2': { out: '# branch.oid abc\n# branch.head feat-x\n# branch.upstream origin/feat-x\n# branch.ab +0 -0\n' },
+    })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBe('feat-x upstream 消滅 · fetch たった今')
+    await turn($, clock)
+    expect(seen.status.at(-1)).toBeUndefined()
+    expect(fetches(seen.git)).toBe(1)
+  })
 })
 
 const BAND = {
@@ -309,6 +382,13 @@ const band = ($: Engine, isWorking = false) =>
   $.ui.mount({ ...BAND, props: { ...BAND.props, isWorking }, surface: 'terminal' })
 
 const BEHIND = [{ out: FIXTURES['status-insync'] }, { out: FIXTURES['status-behind'] }]
+
+// main, and five branches whose upstream the remote no longer has.
+const MAIN = `main\tb7bfd6b\torigin\trefs/heads/main\t${ROOT}\n`
+const FIVE = ['a', 'b', 'c', 'd', 'e'].map(name => `${name}\t111\torigin\trefs/heads/${name}\t\n`).join('')
+const FIVE_GONE: Replies = { 'for-each-ref --format=': { out: MAIN + FIVE } }
+const TIDY_HINT = 'upstream が消えたブランチ 5 本 → /git-nudge tidy'
+const HINT_KEY = `tidy-hint:${ROOT}`
 
 describe('the band and pulling', () => {
   test('behind and clean: the band offers p to pull, and no button has a digit hotkey', async ($, on) => {
@@ -510,22 +590,88 @@ describe('the band and pulling', () => {
   })
 
   test('five branches with a gone upstream suggest tidy once a day', async ($, on) => {
-    const gone = ['a', 'b', 'c', 'd', 'e'].map(name => `${name}\t111\torigin\trefs/heads/${name}\t`).join('\n')
-    const replies = { 'for-each-ref --format=': { out: `main\tb7bfd6b\torigin\trefs/heads/main\t${ROOT}\n${gone}\n` } }
-    const { clock } = world(on, replies)
+    const { clock, store } = world(on, FIVE_GONE)
     await begin($, clock)
     const ui = await band($)
-    expect(await ui.find({ type: 'Text', text: 'upstream が消えたブランチ 5 本 → /git-nudge tidy' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: TIDY_HINT })).toBeDefined()
+    expect(store.get(HINT_KEY)).toBe(localDay(NOW))
     await ui.unmount()
   })
 
   test('the tidy hint stays quiet when another session showed it today', async ($, on) => {
-    const gone = ['a', 'b', 'c', 'd', 'e'].map(name => `${name}\t111\torigin\trefs/heads/${name}\t`).join('\n')
-    const replies = { 'for-each-ref --format=': { out: `main\tb7bfd6b\torigin\trefs/heads/main\t${ROOT}\n${gone}\n` } }
-    const { clock } = world(on, replies, { store: { [`tidy-hint:${ROOT}`]: '2026-10-07' } })
+    const { clock } = world(on, FIVE_GONE, { store: { [HINT_KEY]: localDay(NOW) } })
     await begin($, clock)
     const ui = await band($)
-    expect(await ui.find({ type: 'Text', text: 'upstream が消えたブランチ 5 本 → /git-nudge tidy' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: TIDY_HINT })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the tidy hint is not used up while the band has no room for it', async ($, on) => {
+    const { clock, store } = world(on, {
+      ...FIVE_GONE,
+      'status --porcelain=v2': BEHIND,
+      'stash list': { out: `${(NOW - 30 * DAY) / 1000}\n` },
+    })
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: 'stash 1 件' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: TIDY_HINT })).toBeUndefined()
+    expect(store.has(HINT_KEY)).toBe(false)
+    await ui.unmount()
+  })
+
+  test('the tidy hint is not used up while the band is turned off', async ($, on) => {
+    const { clock, store } = world(on, { ...FIVE_GONE, 'config --get-regexp': { out: 'git-nudge.band false\n' } })
+    await begin($, clock)
+    const ui = await band($)
+    expect(store.has(HINT_KEY)).toBe(false)
+    await ui.unmount()
+  })
+
+  test('/git-nudge pull does not merge when its fetch fails', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'fetch --quiet': [{}, { code: 128, err: "fatal: unable to access 'https://github.com/x/': Could not resolve host: github.com\n" }],
+      'rev-parse --short HEAD': { out: 'c7f8761\n' },
+      'merge --ff-only': {},
+    })
+    await begin($, clock)
+    expect((await run($, 'pull')).text).toBe('取り込みませんでした: fetch に失敗しました（理由は git fetch で確かめられます）')
+    expect(seen.git.some(line => line.startsWith('merge'))).toBe(false)
+  })
+
+  test('a notice closed with x comes back when the same state returns', async ($, on) => {
+    const { clock } = world(on, {
+      // Behind, closed; in sync after the first turn; behind again after the second.
+      'status --porcelain=v2': [...BEHIND, { out: FIXTURES['status-insync'] }, { out: FIXTURES['status-behind'] }],
+    })
+    await begin($, clock)
+    const ui = await band($)
+    await ui.press({ key: 'close' })
+    await turn($, clock)
+    await turn($, clock)
+    await ui.redraw()
+    expect(await ui.find({ type: 'Text', text: 'origin/main より 2 遅れ' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a closed notice comes back as well when only the timer has looked since', async ($, on) => {
+    const { clock } = world(on, {
+      // Each look that fetches reads the status before and after its fetch.
+      'status --porcelain=v2': [
+        ...BEHIND,
+        { out: FIXTURES['status-insync'] },
+        { out: FIXTURES['status-insync'] },
+        { out: FIXTURES['status-behind'] },
+      ],
+    })
+    await begin($, clock)
+    const ui = await band($)
+    await ui.press({ key: 'close' })
+    await pass(clock, 5 * MINUTE)
+    await pass(clock, 5 * MINUTE)
+    await ui.redraw()
+    expect(await ui.find({ type: 'Text', text: 'origin/main より 2 遅れ' })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -577,6 +723,37 @@ describe('telling Claude', () => {
     await begin($, clock)
     await submit($, 'a')
     expect(seen.context[0]).toEqual([`[git-nudge] このリポジトリの状態: 前回からの未 push 1 件\n${WARNING}`])
+  })
+
+  test('after /clear, a commit made in this session is not a leftover from before', async ($, on) => {
+    const { seen, clock } = world(on, {
+      // In sync at the first look (before and after its fetch); one ahead once Claude committed.
+      'status --porcelain=v2': [{ out: FIXTURES['status-insync'] }, { out: FIXTURES['status-insync'] }, { out: FIXTURES['status-ahead'] }],
+    })
+    const state = ownState(on)
+    on('classic.SessionStart', async () => ({}))
+    await begin($, clock)
+    await turn($, clock)
+    // /clear empties $.state and raises SessionStart again.
+    state.empty()
+    await $.classic.SessionStart({ source: 'clear' })
+    await settle(clock)
+    await submit($, 'a')
+    expect(seen.context[0]).toBeUndefined()
+  })
+
+  test('a look that timed out finding the repository does not make Claude hear the same state again', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'rev-parse --show-toplevel': [{ out: `${ROOT}\n` }, { deny: 'timed out' }, { out: `${ROOT}\n` }],
+      'status --porcelain=v2': BEHIND,
+    })
+    await begin($, clock)
+    await submit($, 'a')
+    await turn($, clock)
+    await turn($, clock)
+    await submit($, 'b')
+    expect(seen.context[0]).toBeDefined()
+    expect(seen.context[1]).toBeUndefined()
   })
 })
 
@@ -636,6 +813,82 @@ describe('tidy and the command', () => {
     await begin($, clock)
     expect((await run($, 'tidy')).text).toBe('upstream が消えたブランチはありません。')
     expect(seen.asked).toEqual([])
+  })
+
+  test('tidy waits for the end of the turn Claude is in', async ($, on) => {
+    const { seen, clock } = world(on, TIDY, { answer: '消せるブランチをすべて消す（1 本）' })
+    await begin($, clock)
+    await $.turn.start({ text: 'x', turnId: 'busy-tidy' })
+    expect((await run($, 'tidy')).text).toBe('Claude の作業中は片付けできません。作業が終わってから実行してください')
+    expect(seen.asked).toEqual([])
+  })
+
+  test('a turn that starts while tidy is asking stops the deleting', async ($, on) => {
+    // The question stays open until the test answers it. The turn starts from
+    // the test itself, as a person's prompt does, not from inside the question.
+    let asked = () => {}
+    let answer = () => {}
+    const open = new Promise<void>(resolve => (asked = resolve))
+    const answered = new Promise<void>(resolve => (answer = resolve))
+    const { seen, clock } = world(on, TIDY, {
+      answer: '消せるブランチをすべて消す（1 本）',
+      onAsk: () => {
+        asked()
+        return answered
+      },
+    })
+    await begin($, clock)
+    const tidying = run($, 'tidy')
+    await open
+    await $.turn.start({ text: 'x', turnId: 'mid-tidy' })
+    answer()
+    expect((await tidying).text).toContain('Claude の作業中は片付けできません。作業が終わってから実行してください')
+    expect(seen.git.some(line => line.startsWith('branch -d'))).toBe(false)
+  })
+
+  test('tidy does nothing while the mod is off', async ($, on) => {
+    const { seen, clock } = world(on, TIDY, { answer: '消せるブランチをすべて消す（1 本）' })
+    await begin($, clock)
+    await run($, 'off')
+    expect((await run($, 'tidy')).text).toBe('git-nudge は止まっています（/git-nudge on で再開）')
+    expect(seen.asked).toEqual([])
+  })
+
+  test('after tidy deleted the branches, the band no longer suggests it', async ($, on) => {
+    const { clock } = world(
+      on,
+      {
+        ...TIDY,
+        // The first look, tidy's own listing, then the look after the deleting.
+        'for-each-ref --format=': [{ out: MAIN + FIVE }, { out: MAIN + FIVE }, { out: MAIN }],
+        'ls-remote --heads': { out: 'b7bfd6b\trefs/heads/main\n' },
+        'for-each-ref --merged': { out: 'a\nb\nc\nd\ne\nmain\n' },
+        'worktree list': { out: `worktree ${ROOT}\nHEAD b7bfd6b\nbranch refs/heads/main\n` },
+      },
+      { answer: '消せるブランチをすべて消す（5 本）' },
+    )
+    await begin($, clock)
+    const ui = await band($)
+    expect(await ui.find({ type: 'Text', text: TIDY_HINT })).toBeDefined()
+    expect((await run($, 'tidy')).text).toContain('消しました: 5 本')
+    await ui.redraw()
+    expect(await ui.find({ type: 'Text', text: TIDY_HINT })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('off while the first look is still fetching leaves nothing shown', async ($, on) => {
+    const { seen, clock } = world(on, {
+      'status --porcelain=v2': BEHIND,
+      'fetch --quiet': { before: () => run($, 'off') },
+    })
+    await begin($, clock)
+    expect(seen.status.at(-1)).toBeUndefined()
+  })
+
+  test('off before the first look fetches stops that fetch', async ($, on) => {
+    const { seen, clock } = world(on, { 'rev-parse --show-toplevel': { out: `${ROOT}\n`, before: () => run($, 'off') } })
+    await begin($, clock)
+    expect(fetches(seen.git)).toBe(0)
   })
 
   test('off stops looking and fetching for the session; on starts again', async ($, on) => {

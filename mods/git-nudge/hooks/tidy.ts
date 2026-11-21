@@ -1,4 +1,4 @@
-import type { LocalBranch } from '../types'
+import type { GoneBranch, LocalBranch } from '../types'
 
 const HEADS = 'refs/heads/'
 
@@ -18,6 +18,45 @@ export function withGoneUpstream(branches: LocalBranch[], heads: ReadonlySet<str
 // checked out here, and git refuses to delete one checked out elsewhere).
 export function tidyCandidates(branches: LocalBranch[], heads: ReadonlySet<string>, remote: string): LocalBranch[] {
   return withGoneUpstream(branches, heads, remote).filter(branch => branch.worktree === null)
+}
+
+// The remote-tracking ref a branch's upstream is fetched into, under the
+// default refspec; null when the branch tracks no branch on a remote.
+export function trackingRef(branch: LocalBranch): string | null {
+  if (branch.remote === null || branch.remoteRef === null || !branch.remoteRef.startsWith(HEADS)) return null
+  return `refs/remotes/${branch.remote}/${branch.remoteRef.slice(HEADS.length)}`
+}
+
+// What to remember of the branches ls-remote just found gone. `refs` is what
+// their remote-tracking refs point at now; null when that could not be read.
+export function goneBranches(lost: LocalBranch[], refs: ReadonlyMap<string, string> | null): GoneBranch[] {
+  return lost.map(branch => ({
+    name: branch.name,
+    tracking: refs === null ? null : (refs.get(trackingRef(branch) ?? '') ?? ''),
+  }))
+}
+
+// The remembered branches that are still gone, judged without asking the
+// remote. A branch deleted here since is dropped, and so is one whose
+// remote-tracking ref moved: only a push or a fetch of that branch moves it,
+// so the remote has it again. A ref missing now was pruned, and one that
+// cannot be compared says nothing: those branches stay gone.
+export function stillGone(gone: GoneBranch[], branches: LocalBranch[], refs: ReadonlyMap<string, string> | null): GoneBranch[] {
+  return gone.filter(one => {
+    const branch = branches.find(local => local.name === one.name)
+    if (branch === undefined) return false
+    const ref = trackingRef(branch)
+    if (ref === null) return false
+    if (refs === null || one.tracking === null) return true
+    const now = refs.get(ref)
+    return now === undefined || now === one.tracking
+  })
+}
+
+// How many of the gone branches tidy would list (see tidyCandidates).
+export function countTidy(gone: GoneBranch[], branches: LocalBranch[]): number {
+  const names = new Set(gone.map(one => one.name))
+  return branches.filter(branch => names.has(branch.name) && branch.worktree === null).length
 }
 
 export type TidyPlan = { deletable: LocalBranch[]; unconfirmed: LocalBranch[] }

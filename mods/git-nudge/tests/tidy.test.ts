@@ -1,7 +1,17 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { lines, parseBranches, parseRemoteHeads } from '../hooks/parse'
-import { deletedReport, describeTidy, planTidy, tidyCandidates, withGoneUpstream } from '../hooks/tidy'
+import {
+  countTidy,
+  deletedReport,
+  describeTidy,
+  goneBranches,
+  planTidy,
+  stillGone,
+  tidyCandidates,
+  trackingRef,
+  withGoneUpstream,
+} from '../hooks/tidy'
 import type { LocalBranch } from '../types'
 import { FIXTURES } from './fixtures'
 
@@ -30,6 +40,58 @@ describe('gone upstreams', () => {
     const there = parseRemoteHeads('abc\trefs/heads/feature/日本語\n')
     expect(withGoneUpstream([local], there, 'origin')).toEqual([])
     expect(names(withGoneUpstream([local], new Set(), 'origin'))).toEqual(['feature/日本語'])
+  })
+})
+
+describe('remembering which upstreams are gone', () => {
+  const REF = 'refs/remotes/origin/feat'
+  const feat: LocalBranch = { name: 'feat', oid: 'aaa', remote: 'origin', remoteRef: 'refs/heads/feat', worktree: null }
+  const used: LocalBranch = { name: 'used', oid: 'ccc', remote: 'origin', remoteRef: 'refs/heads/used', worktree: '/fx/wt' }
+
+  test('the remote-tracking ref of a branch is where the default refspec fetches it', () => {
+    expect(trackingRef(feat)).toBe(REF)
+    expect(trackingRef({ ...feat, remoteRef: 'refs/heads/feature/日本語' })).toBe('refs/remotes/origin/feature/日本語')
+    expect(trackingRef({ ...feat, remote: null, remoteRef: null })).toBeNull()
+  })
+
+  test('notes what the remote-tracking ref of each pointed at: nothing, or unknown', () => {
+    expect(goneBranches([feat, used], new Map([[REF, 'aaa']]))).toEqual([
+      { name: 'feat', tracking: 'aaa' },
+      { name: 'used', tracking: '' },
+    ])
+    expect(goneBranches([feat], null)).toEqual([{ name: 'feat', tracking: null }])
+  })
+
+  test('a branch deleted since is forgotten', () => {
+    const gone = [
+      { name: 'feat', tracking: 'aaa' },
+      { name: 'deleted', tracking: 'bbb' },
+    ]
+    expect(stillGone(gone, [feat], new Map([[REF, 'aaa']]))).toEqual([{ name: 'feat', tracking: 'aaa' }])
+    expect(stillGone(gone, [feat], null)).toEqual([{ name: 'feat', tracking: 'aaa' }])
+  })
+
+  test('a branch whose remote-tracking ref moved (a push, a fetch) is on the remote again', () => {
+    expect(stillGone([{ name: 'feat', tracking: 'aaa' }], [feat], new Map([[REF, 'bbb']]))).toEqual([])
+    expect(stillGone([{ name: 'feat', tracking: '' }], [feat], new Map([[REF, 'bbb']]))).toEqual([])
+  })
+
+  test('a ref that did not move, was pruned or cannot be compared leaves the branch gone', () => {
+    const kept = [{ name: 'feat', tracking: 'aaa' }]
+    expect(stillGone(kept, [feat], new Map([[REF, 'aaa']]))).toEqual(kept)
+    expect(stillGone(kept, [feat], new Map())).toEqual(kept)
+    expect(stillGone(kept, [feat], null)).toEqual(kept)
+    const unknown = [{ name: 'feat', tracking: null }]
+    expect(stillGone(unknown, [feat], new Map([[REF, 'bbb']]))).toEqual(unknown)
+  })
+
+  test('counts the gone branches tidy would list: those checked out nowhere', () => {
+    const gone = [
+      { name: 'feat', tracking: '' },
+      { name: 'used', tracking: '' },
+    ]
+    expect(countTidy(gone, [feat, used])).toBe(1)
+    expect(countTidy([], [feat, used])).toBe(0)
   })
 })
 

@@ -5,9 +5,11 @@ import {
   MINUTE,
   ago,
   isGone,
+  localDay,
   noticeKey,
   notices,
   pullBlocker,
+  startOf,
   statusLine,
   tellText,
 } from '../hooks/judge'
@@ -28,7 +30,7 @@ function snap(status: StatusKey | string, extra: Partial<Snapshot> = {}): Snapsh
     stash: { count: 0, oldest: null },
     operation: null,
     lockSince: null,
-    goneNames: [],
+    gone: [],
     tidyCount: 0,
     fetch: { lastOk: NOW - 3 * MINUTE, failed: null },
     at: NOW,
@@ -50,11 +52,19 @@ describe('ago', () => {
   })
 })
 
+describe('localDay', () => {
+  test('the calendar day where the person is, not the day in UTC', () => {
+    expect(localDay(new Date(2026, 9, 7, 0, 30).getTime())).toBe('2026-10-07')
+    expect(localDay(new Date(2026, 9, 7, 23, 30).getTime())).toBe('2026-10-07')
+    expect(localDay(new Date(2026, 0, 5, 12).getTime())).toBe('2026-01-05')
+  })
+})
+
 describe('isGone', () => {
   test('a pruned upstream, or one ls-remote no longer lists', () => {
     expect(isGone(snap('status-gone-pruned'))).toBe(true)
     expect(isGone(snap('status-gone-noprune'))).toBe(false)
-    expect(isGone(snap('status-gone-noprune', { goneNames: ['feat-merged'] }))).toBe(true)
+    expect(isGone(snap('status-gone-noprune', { gone: [{ name: 'feat-merged', tracking: '' }] }))).toBe(true)
     expect(isGone(snap('status-noupstream'))).toBe(false)
     expect(isGone(snap('status-detached'))).toBe(false)
   })
@@ -76,6 +86,19 @@ describe('pullBlocker', () => {
     expect(pullBlocker(snap('status-behind', { operation: 'rebase' }))).toBe(
       'rebase の途中です（git rebase --continue か --abort）',
     )
+  })
+
+  test('a fetch that failed stops it, since how far behind the branch is cannot be known', () => {
+    const failed = (auth: boolean) => ({ fetch: { lastOk: null, failed: { at: NOW, auth } } })
+    expect(pullBlocker(snap('status-behind', failed(false)))).toBe('fetch に失敗しました（理由は git fetch で確かめられます）')
+    expect(pullBlocker(snap('status-insync', failed(false)))).toBe('fetch に失敗しました（理由は git fetch で確かめられます）')
+    expect(pullBlocker(snap('status-behind', failed(true)))).toBe('fetch が認証で失敗しました（理由は git fetch で確かめられます）')
+  })
+
+  test('what no fetch would change is said first', () => {
+    const failed = { fetch: { lastOk: null, failed: { at: NOW, auth: false } } }
+    expect(pullBlocker(snap('status-detached', failed))).toBe('HEAD が切り離されています')
+    expect(pullBlocker(snap('status-noupstream', failed))).toBe('upstream がありません')
   })
 })
 
@@ -110,14 +133,34 @@ describe('notices', () => {
     expect(ids(at(snap('status-insync', { lockSince: NOW - LOCK_AFTER })))).toEqual(['lock'])
   })
 
-  test('leftovers from before the session show until their count changes', () => {
-    const start = { ahead: 1, dirty: 3 }
-    expect(ids(at(snap('status-ahead'), start))).toEqual(['unpushed'])
-    expect(at(snap('status-ahead'), start)[0]!.text).toBe('前回からの未 push 1 件')
-    expect(ids(at(snap('status-insync'), start))).toEqual([])
-    expect(ids(at(snap('status-dirty'), { ahead: 0, dirty: 3 }))).toEqual(['uncommitted'])
-    expect(at(snap('status-dirty'), { ahead: 0, dirty: 3 })[0]!.text).toBe('前回の未コミット変更 3 ファイル')
-    expect(ids(at(snap('status-dirty'), { ahead: 0, dirty: 2 }))).toEqual([])
+  test('leftovers from before the session show while nothing has touched them', () => {
+    const ahead = snap('status-ahead')
+    expect(at(ahead, startOf(ahead.status))).toEqual([{ id: 'unpushed', text: '前回からの未 push 1 件', tell: true }])
+    expect(at(snap('status-insync'), startOf(ahead.status))).toEqual([])
+    const dirty = snap('status-dirty')
+    expect(at(dirty, startOf(dirty.status))).toEqual([{ id: 'uncommitted', text: '前回の未コミット変更 3 ファイル', tell: true }])
+    expect(at(snap('status-insync'), startOf(dirty.status))).toEqual([])
+  })
+
+  test('commits made in this session are not leftovers, even when as many are unpushed as at the start', () => {
+    const start = startOf(snap('status-ahead').status)
+    // Pushed, then one new commit: HEAD has moved.
+    const committed = FIXTURES['status-ahead'].replace('branch.oid cc97fc65', 'branch.oid dd00dd00')
+    expect(at(snap(committed), start)).toEqual([])
+    // Another branch that is one ahead as well.
+    const other = FIXTURES['status-ahead'].replace('branch.head main', 'branch.head feature')
+    expect(at(snap(other), start)).toEqual([])
+  })
+
+  test('other uncommitted files are not leftovers, even when they are as many as at the start', () => {
+    const start = startOf(snap('status-dirty').status)
+    expect(at(snap(FIXTURES['status-dirty'].replace('? u.txt', '? v.txt')), start)).toEqual([])
+  })
+
+  test('a session that started clean has no leftovers', () => {
+    const start = startOf(snap('status-insync').status)
+    expect(at(snap('status-ahead'), start)).toEqual([])
+    expect(at(snap('status-dirty'), start)).toEqual([])
   })
 
   test('old stashes, by stashAgeDays', () => {
@@ -146,7 +189,7 @@ describe('notices', () => {
       tidyCount: 9,
       fetch: { lastOk: null, failed: { at: NOW, auth: true } },
     })
-    expect(ids(at(all, { ahead: 0, dirty: 1 }, true))).toEqual(['operation', 'lock', 'auth', 'uncommitted', 'stash', 'tidy'])
+    expect(ids(at(all, startOf(all.status), true))).toEqual(['operation', 'lock', 'auth', 'uncommitted', 'stash', 'tidy'])
   })
 })
 
@@ -183,7 +226,8 @@ describe('statusLine', () => {
 
 describe('tellText and noticeKey', () => {
   test('tells what is told, with the rule not to act on it unasked', () => {
-    const list = notices(snap('status-behind', { stash: { count: 1, oldest: NOW - 30 * DAY } }), { ahead: 0, dirty: 0 }, DEFAULTS, NOW, false)
+    const start = startOf(parseStatus(FIXTURES['status-insync']))
+    const list = notices(snap('status-behind', { stash: { count: 1, oldest: NOW - 30 * DAY } }), start, DEFAULTS, NOW, false)
     expect(tellText(list)).toBe(
       '[git-nudge] このリポジトリの状態: origin/main より 2 遅れ\n' +
         'これは情報です。ユーザーの指示なしに pull・rebase・push・ブランチの削除をしないでください。',

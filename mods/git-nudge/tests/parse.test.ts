@@ -9,6 +9,7 @@ import {
   isSupported,
   parseBranches,
   parseConfig,
+  parseRefs,
   parseRemoteHeads,
   parseStash,
   parseStatus,
@@ -49,6 +50,22 @@ describe('parseStatus', () => {
     expect(dirty).toEqual({ tracked: 2, untracked: 1, conflicted: 0 })
     expect(files(dirty)).toBe(3)
     expect(parseStatus(FIXTURES['status-conflict']).changes).toEqual({ tracked: 0, untracked: 0, conflicted: 1 })
+  })
+
+  test('reads the commit HEAD is at, and none before the first commit', () => {
+    expect(parseStatus(FIXTURES['status-ahead']).oid).toBe('cc97fc65bbedaa4b8dcdf9146a094db5d8eabc58')
+    expect(parseStatus(FIXTURES['status-detached']).oid).toBe('cc97fc65bbedaa4b8dcdf9146a094db5d8eabc58')
+    expect(parseStatus(FIXTURES['status-initial']).oid).toBeNull()
+  })
+
+  test('dirtyKey changes when an uncommitted entry is added, removed or staged, and only then', () => {
+    const dirty = parseStatus(FIXTURES['status-dirty']).dirtyKey
+    expect(dirty).not.toBe('')
+    expect(parseStatus(FIXTURES['status-insync']).dirtyKey).toBe('')
+    expect(parseStatus(FIXTURES['status-dirty'].replace('# branch.ab +0 -0', '# branch.ab +3 -1')).dirtyKey).toBe(dirty)
+    expect(parseStatus(FIXTURES['status-dirty'].replace('? u.txt', '? v.txt')).dirtyKey).not.toBe(dirty)
+    expect(parseStatus(FIXTURES['status-dirty'].replace('? u.txt\n', '')).dirtyKey).not.toBe(dirty)
+    expect(parseStatus(FIXTURES['status-dirty'].replace('1 .M N...', '1 M. N...')).dirtyKey).not.toBe(dirty)
   })
 
   test('CRLF output reads the same as LF', () => {
@@ -99,6 +116,15 @@ describe('parseConfig', () => {
     expect(parseConfig('git-nudge.band false\ngit-nudge.band maybe\n').settings.band).toBe(false)
     expect(parseConfig('git-nudge.fetchinterval 0\r\n').settings.fetchInterval).toBe(0)
   })
+
+  test('a fetchInterval longer than a day is cut to a day, and named', () => {
+    expect(parseConfig('git-nudge.fetchinterval 100000\n')).toEqual({
+      settings: { ...DEFAULTS, fetchInterval: 1440 },
+      problems: ['git-nudge.fetchinterval=100000 は上限を超えるので 1440（分）にしました'],
+    })
+    expect(parseConfig('git-nudge.fetchinterval 1440\n')).toEqual({ settings: { ...DEFAULTS, fetchInterval: 1440 }, problems: [] })
+    expect(parseConfig(`git-nudge.fetchinterval ${'9'.repeat(400)}\n`).settings.fetchInterval).toBe(1440)
+  })
 })
 
 describe('branches and the remote', () => {
@@ -120,6 +146,15 @@ describe('branches and the remote', () => {
     })
     expect(branches[3]!.worktree).toBe('/fx/wt')
     expect(branches[5]).toMatchObject({ remote: null, remoteRef: null, worktree: '/fx/wt-gone' })
+  })
+
+  test('for-each-ref gives each ref and the commit it points at', () => {
+    const refs = parseRefs('refs/remotes/origin/main\tb7bfd6b\r\nrefs/remotes/origin/feature/日本語\tabc\n')
+    expect([...refs]).toEqual([
+      ['refs/remotes/origin/main', 'b7bfd6b'],
+      ['refs/remotes/origin/feature/日本語', 'abc'],
+    ])
+    expect(parseRefs('').size).toBe(0)
   })
 
   test('worktrees git can prune', () => {

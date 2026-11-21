@@ -56,7 +56,7 @@ origin/main より 3 遅れ  p: 取り込む  x: 閉じる
 ```
 
 - ボタンは、帯にフォーカスを移してから押します（**Ctrl+X → Tab**、またはクリック）。プロンプトに文字を打っても押されません。
-- `p: 取り込む` は、遅れていて、追跡中のファイルに変更が無く、手元に独自のコミットも無いときだけ出ます。先に fetch してから `git merge --ff-only @{u}` を実行し、戻すためのコマンドを表示します。Claude の作業中は出ません。
+- `p: 取り込む` は、遅れていて、追跡中のファイルに変更が無く、手元に独自のコミットも無いときだけ出ます。先に fetch してから `git merge --ff-only @{u}` を実行し、戻すためのコマンドを表示します。fetch に失敗したときは取り込みません。Claude の作業中は出ません。
 - `x: 閉じる` で隠した項目は、状態が変わるまで出ません。
 
 ### コマンド
@@ -75,6 +75,8 @@ origin/main より 3 遅れ  p: 取り込む  x: 閉じる
 3. squash マージなどでマージを確認できないブランチは消しません。一覧と、自分で消すためのコマンドを示すだけです。
 4. ディレクトリが無くなった worktree も一覧にします（消すコマンド `git worktree prune` は自分で実行してください）。
 
+Claude の作業中と、`/git-nudge off` で止めている間は実行しません。確認を待つ間に Claude の作業が始まったときも、消さずに終わります。
+
 ## 設定
 
 `git config` で設定します。`--global` で全体、付けなければそのリポジトリだけに効きます。
@@ -88,7 +90,7 @@ git config git-nudge.enabled false                # このリポジトリでは�
 |---|---|---|
 | `git-nudge.enabled` | `true` | `false` で、そのリポジトリでは何もしない |
 | `git-nudge.fetchOnStart` | `true` | セッション開始時に fetch する |
-| `git-nudge.fetchInterval` | `5` | 定期 fetch の間隔（分）。`0` でオフ |
+| `git-nudge.fetchInterval` | `5` | 定期 fetch の間隔（分）。`0` でオフ。上限は `1440`（1日）で、超える値は `1440` として扱う |
 | `git-nudge.tellClaude` | `true` | 状態が変わったときに Claude へ伝える |
 | `git-nudge.band` | `true` | 帯を出す。`false` ならステータス行だけ |
 | `git-nudge.stashAgeDays` | `7` | 何日より古い stash を帯で知らせるか |
@@ -114,6 +116,8 @@ git config git-nudge.enabled false                # このリポジトリでは�
 | プロンプトの送信 | 伝える内容が前回と変わっていれば、Claude への文脈に足す |
 
 - 状態は `git status --porcelain=v2 --branch`（`--no-optional-locks` 付き。`index.lock` を取らない）、`git stash list`、`git rev-parse --git-path` で見つけた rebase / merge などの印、`git ls-remote --heads` で調べます。
+- 「前回から」の未 push と未コミットは、セッションが最初に見たときのまま手つかずの間だけ出します（HEAD のコミットとブランチが同じ、未コミットの項目が同じ）。件数が同じでも、中身が入れ替わっていれば出しません。
+- upstream が消えたブランチは、fetch のたびに `git ls-remote` で調べて覚えます。次の fetch までは、手元のブランチと remote 追跡 ref（`git for-each-ref`）だけで見直し、消したブランチと、push し直して追跡 ref が動いたブランチを外します。
 - fetch は `--prune` を付けず、git の自動メンテナンスも走らせません。
 - mod が状態を変えるのは、fetch、頼まれたときの fast-forward、確認した後の `git branch -d` の3つだけです。push、ブランチの切り替え、`index.lock` の削除、`git branch -D`、worktree の削除はしません（知らせるだけ）。
 
@@ -122,6 +126,7 @@ git config git-nudge.enabled false                # このリポジトリでは�
 - 見張るのは、セッションの作業ディレクトリを含むリポジトリ1つです。
 - 帯は、ターミナルと Desktop アプリにだけ出ます（VS Code 拡張と `claude -p` では出ません。Claude への伝達とステータス行は動きます）。
 - 片付けは対話できるセッションでだけ動きます。
+- upstream が消えたブランチを、同じコミットのまま push し直した場合は、追跡 ref が動かないので、次の fetch（または `/git-nudge`）まで `upstream 消滅` のままです。
 - mod の API は新しく、Claude Code の版によって仕様が変わり、動かなくなることがあります。
 
 ## 開発

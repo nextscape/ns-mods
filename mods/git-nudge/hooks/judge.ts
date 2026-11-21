@@ -1,4 +1,4 @@
-import type { Notice, Operation, Settings, Snapshot, Start } from '../types'
+import type { Notice, Operation, Settings, Snapshot, Start, Status } from '../types'
 import { files } from './parse'
 
 export const MINUTE = 60_000
@@ -29,23 +29,46 @@ export function ago(ms: number): string {
   return `${Math.floor(ms / DAY)}日前`
 }
 
+// The calendar day at `ms` where the person is (not the day in UTC), as YYYY-MM-DD.
+export function localDay(ms: number): string {
+  const date = new Date(ms)
+  const two = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}`
+}
+
+// What a session keeps of its first look, to tell what was left from before
+// apart from its own work.
+export function startOf(status: Status): Start {
+  return {
+    head: status.branch.head,
+    oid: status.oid,
+    ahead: status.branch.ahead ?? 0,
+    dirty: files(status.changes),
+    dirtyKey: status.dirtyKey,
+  }
+}
+
 // The current branch's upstream is gone: pruned (status gives no
-// ahead/behind for it) or missing from the last ls-remote.
+// ahead/behind for it) or among the branches the last ls-remote found gone.
 export function isGone(snap: Snapshot): boolean {
   const { head, upstream, ahead } = snap.status.branch
   if (head === null || upstream === null) return false
-  return ahead === null || (snap.goneNames?.includes(head) ?? false)
+  return ahead === null || (snap.gone?.some(one => one.name === head) ?? false)
 }
 
-// Why a fast-forward should not run now, or null when it may: the branch is
-// behind, has nothing of its own, no tracked file is changed and nothing is
-// half done. Untracked files do not stop it: git refuses on its own when one
-// would be overwritten.
+// Why a fast-forward should not run now, or null when it may: the fetch
+// before it worked, the branch is behind, has nothing of its own, no tracked
+// file is changed and nothing is half done. Untracked files do not stop it:
+// git refuses on its own when one would be overwritten. After a failed fetch
+// how far behind the branch is cannot be known, so, like git pull, it stops.
 export function pullBlocker(snap: Snapshot): string | null {
   const { branch, changes } = snap.status
   if (snap.operation !== null) return OPERATION_TEXT[snap.operation]
   if (branch.head === null) return 'HEAD が切り離されています'
   if (branch.upstream === null) return 'upstream がありません'
+  if (snap.fetch.failed !== null) {
+    return `fetch ${snap.fetch.failed.auth ? 'が認証で' : 'に'}失敗しました（理由は git fetch で確かめられます）`
+  }
   if (isGone(snap)) return `${branch.upstream} は削除済みです`
   if (!branch.behind) return '取り込むものがありません'
   if (branch.ahead) return `${branch.upstream} と分岐しています（↓${branch.behind} ↑${branch.ahead}）`
@@ -81,10 +104,16 @@ export function notices(snap: Snapshot, start: Start | null, settings: Settings,
   if (snap.fetch.failed?.auth) {
     out.push({ id: 'auth', text: 'fetch が認証で失敗しました。このセッションでは定期 fetch を止めます', tell: false })
   }
-  if (start !== null && start.ahead > 0 && branch.ahead === start.ahead) {
-    out.push({ id: 'unpushed', text: `前回からの未 push ${start.ahead} 件`, tell: true })
+  // Leftovers from before the session are named while nothing has touched
+  // them. Counting is not enough: after a push, as many new commits would pass
+  // for the old ones. So the unpushed commits count while HEAD is the commit,
+  // on the branch, the session found it at, and the uncommitted changes while
+  // the same entries are listed.
+  const { oid } = snap.status
+  if (start !== null && start.ahead > 0 && branch.ahead && oid !== null && oid === start.oid && branch.head === start.head) {
+    out.push({ id: 'unpushed', text: `前回からの未 push ${branch.ahead} 件`, tell: true })
   }
-  if (start !== null && start.dirty > 0 && files(changes) === start.dirty) {
+  if (start !== null && start.dirty > 0 && snap.status.dirtyKey === start.dirtyKey) {
     out.push({ id: 'uncommitted', text: `前回の未コミット変更 ${start.dirty} ファイル`, tell: true })
   }
   const oldest = snap.stash.oldest
@@ -134,7 +163,7 @@ export function tellText(list: Notice[]): string | null {
   ].join('\n')
 }
 
-// A dismissed notice stays hidden until its text changes.
+// A dismissed notice stays hidden until its text changes or it goes away.
 export function noticeKey(notice: Notice): string {
   return `${notice.id}:${notice.text}`
 }
