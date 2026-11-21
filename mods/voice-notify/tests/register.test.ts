@@ -8,6 +8,10 @@ import type { World, WorldOptions } from './world'
 // Longer than summaryMinChars (80).
 const LONG = '要約の受け渡しをやめて、同じ処理の中で待つようにしました。テストも通っています。'.repeat(3)
 
+// A background build, and the notice its end wakes the session with.
+const BUILD = { id: 'b1', type: 'shell', status: 'running', description: 'npm run build' }
+const NOTICE = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'
+
 // One wav in every phrase folder.
 function phrases(): Record<string, string> {
   const names = [
@@ -35,6 +39,9 @@ type TurnOptions = {
   agentId?: string
   reason?: 'answer' | 'aborted' | 'error'
   text?: string
+  // Where the turn's prompt came from (prompt.submit's origin.kind); the
+  // person's own Enter by default.
+  origin?: string
   // The tools the turn calls (1 by default), and what its Stop says is in
   // flight; stop: 'after' sends the Stop after the turn's end, 'none' none.
   tools?: string[]
@@ -47,7 +54,9 @@ async function turn($: Engine, o: TurnOptions = {}) {
   const turnId = `t${++turns}`
   // A subagent's run raises no turn.start, and its stop is no classic Stop.
   const main = !o.agentId
-  if (main) await $.turn.start({ text: o.text ?? 'お願いします', turnId })
+  const text = o.text ?? 'お願いします'
+  if (main) await $.prompt.submit({ text, wait: false, origin: { kind: o.origin ?? 'composer' } } as never)
+  if (main) await $.turn.start({ text, turnId })
   if (main) for (const tool of o.tools ?? ['Read']) await $.tool.call({ tool, input: {} } as never)
   const stop = () => $.classic.Stop({ stop_hook_active: false, background_tasks: o.background ?? [], session_crons: o.crons ?? [] } as never)
   const when = main ? (o.stop ?? 'before') : 'none'
@@ -252,6 +261,97 @@ describe('voice-notify', () => {
     await turn($)
     await settle(w)
     expect(spoke(w)).toEqual(['phrases/metan/stop/solo'])
+  })
+
+  test('with the engine down, a short reply that called no tool is silent all the same', async ($, on) => {
+    const w = setup(on, { engine: false })
+    await turn($, { durationMs: 5_000, tools: [] })
+    await settle(w)
+    expect(w.played).toEqual([])
+    expect(log(w)).toMatch(/道具を使わない短い返事のため無音/)
+  })
+
+  test('the end of background work is said even when the turn that reports it calls no tool', async ($, on) => {
+    const w = setup(on)
+    await turn($, { background: [BUILD] })
+    await settle(w)
+    // The build ends and wakes the session: a short answer, no tool.
+    await turn($, { durationMs: 5_000, tools: [], answer: 'ビルドが完了しました。', text: NOTICE, origin: 'task-notification' })
+    await settle(w)
+    expect(spoke(w).filter(p => p.startsWith('phrases/'))).toEqual(['phrases/zundamon/stop/interim', 'phrases/metan/stop/brief/done'])
+    expect(log(w)).toMatch(/最終・終わった裏の作業1件 \[metan\]/)
+  })
+
+  test('a reply typed while the background work still runs stays silent', async ($, on) => {
+    const w = setup(on)
+    await turn($, { background: [BUILD] })
+    await settle(w)
+    await turn($, { durationMs: 5_000, tools: [], answer: 'はい、終わったらお知らせします。', background: [BUILD] })
+    await settle(w)
+    expect(spoke(w).filter(p => p.startsWith('phrases/'))).toEqual(['phrases/zundamon/stop/interim'])
+  })
+
+  test('work left running since before the next request (a dev server) does not keep later turns interim', async ($, on) => {
+    const w = setup(on)
+    const dev = [{ id: 'd1', type: 'shell', status: 'running', description: 'npm run dev' }]
+    await turn($, { background: dev })
+    await settle(w)
+    await turn($, { background: dev })
+    await settle(w)
+    // Work the later turn starts itself is still waited on.
+    await turn($, { background: [...dev, BUILD] })
+    await settle(w)
+    expect(spoke(w).filter(p => p.startsWith('phrases/'))).toEqual([
+      'phrases/zundamon/stop/interim', 'phrases/metan/stop/done', 'phrases/zundamon/stop/interim',
+    ])
+  })
+
+  test('a turn a notice started still waits on what was running before it', async ($, on) => {
+    const w = setup(on)
+    const lint = { id: 'b2', type: 'shell', status: 'running', description: 'npm run lint' }
+    await turn($, { background: [BUILD, lint] })
+    await settle(w)
+    // The build ended and woke the session; the lint still runs.
+    await turn($, { background: [lint], text: NOTICE, origin: 'task-notification' })
+    await settle(w)
+    expect(spoke(w).filter(p => p.startsWith('phrases/'))).toEqual(['phrases/zundamon/stop/interim', 'phrases/zundamon/stop/interim'])
+  })
+
+  test('a notice the engine names no origin for is told by its frame', async ($, on) => {
+    const w = setup(on)
+    const lint = { id: 'b2', type: 'shell', status: 'running', description: 'npm run lint' }
+    await turn($, { background: [BUILD, lint] })
+    await settle(w)
+    await turn($, { background: [lint], text: NOTICE, origin: 'unclassified' })
+    await settle(w)
+    expect(spoke(w).filter(p => p.startsWith('phrases/'))[1]).toBe('phrases/zundamon/stop/interim')
+  })
+
+  test("a subagent's turn starting inside the main turn does not lose the main turn's record", async ($, on) => {
+    const w = setup(on)
+    await $.turn.start({ text: 'お願いします', turnId: 'main-1' })
+    await $.tool.call({ tool: 'Agent', input: {} } as never)
+    await $.turn.start({ text: '調べてください', turnId: 'agent-1', agentId: 'a1' } as never)
+    await $.classic.Stop({ stop_hook_active: false, background_tasks: [BUILD], session_crons: [] } as never)
+    await $.turn.complete({ turnId: 'main-1', answer: LONG, durationMs: 60_000, isAborted: false, reason: 'answer' } as never)
+    await settle(w)
+    expect(spoke(w)[0]).toBe('phrases/zundamon/stop/interim')
+    expect(log(w)).toMatch(/道具 1回 .*裏の作業1件/)
+  })
+
+  test('muted while the phrase plays, the body is not read', async ($, on) => {
+    // The summary and the phrase take seconds: the hotkey, or a call joined
+    // meanwhile, must still stop what follows.
+    const w: World = setup(on, {
+      run: argv => {
+        if (/stop[\\/]done[\\/]01\.wav$/.test(argv.at(-1) ?? '')) w.files.set(`${ROOT}/state/mute`, 'x')
+        return undefined
+      },
+    })
+    await turn($)
+    await settle(w)
+    expect(spoke(w)).toEqual(['phrases/metan/stop/done'])
+    expect(log(w)).toMatch(/INFO stop +無音化: 手動ミュート/)
   })
 
   test('a summary that fails falls back to the first sentences', async ($, on) => {

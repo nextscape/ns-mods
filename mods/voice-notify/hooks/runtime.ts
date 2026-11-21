@@ -2,6 +2,8 @@
 // call (a reload starts it over), and what each event works with (Ctx).
 
 import type { Config } from './config'
+import { NO_FLIGHT } from './decide'
+import type { Flight, Origin } from './decide'
 import { Gate } from './gate'
 import type { Os } from './os'
 
@@ -14,6 +16,11 @@ export type Runtime = {
   // classic Stop belongs to.
   turns: Map<string, MainTurn>
   current: string | null
+  // Prompts submitted since the last main turn began, with where each came
+  // from: the next turn finds its own among them (decide.ts's originOf).
+  submitted: Array<{ text: string; origin: Origin | undefined }>
+  // The background work the main conversation's last Stop left in flight.
+  flight: Flight
   os: Os | null
   // The Linux player found; one not found is not remembered, so a player
   // installed later plays without reopening the session.
@@ -40,6 +47,8 @@ export function createRuntime(): Runtime {
     compacting: 0,
     turns: new Map(),
     current: null,
+    submitted: [],
+    flight: NO_FLIGHT,
     os: null,
     linuxPlayer: null,
     warnedConfig: false,
@@ -53,16 +62,27 @@ export function createRuntime(): Runtime {
 }
 
 // What a main turn did that its turn.complete does not say: how many tools it
-// called, and what its classic Stop said is still in flight (background
-// shells, monitors, subagents, one-shot wakeups); null until the Stop comes.
-// turn.complete and Stop may come in either order: `stopped` resolves on the
-// Stop.
-export type MainTurn = { tools: number; pending: number | null; stopped: Promise<void>; stop: () => void }
+// called, and what its classic Stop said of background work (shells,
+// monitors, subagents, one-shot wakeups): how much the turn leaves in flight
+// and waits on (`pending`, null until the Stop comes), and how much from
+// before it has ended (`ended`). The Stop reads them against `own` (the person
+// asked for the turn) and `before` (the flight when it began): see decide.ts's
+// trackFlight. turn.complete and Stop may come in either order: `stopped`
+// resolves on the Stop.
+export type MainTurn = {
+  tools: number
+  own: boolean
+  before: Flight
+  pending: number | null
+  ended: number
+  stopped: Promise<void>
+  stop: () => void
+}
 
-export function mainTurn(): MainTurn {
+export function mainTurn(own: boolean, before: Flight): MainTurn {
   let stop!: () => void
   const stopped = new Promise<void>(resolve => (stop = resolve))
-  return { tools: 0, pending: null, stopped, stop }
+  return { tools: 0, own, before, pending: null, ended: 0, stopped, stop }
 }
 
 // What an event that may speak works with: the home, its settings, the OS.

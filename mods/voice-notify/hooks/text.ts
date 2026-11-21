@@ -6,6 +6,8 @@ import type { SpeechConfig } from './config'
 export type StopCase = 'ask' | 'trouble' | 'done'
 export type ReadingConfig = Pick<SpeechConfig, 'readings' | 'lowercaseMinLength' | 'keepUppercase'>
 
+// A run of over 200 characters with no end mark matches only by its last 200:
+// the matches are not always the whole text up to the last one's end.
 const SENTENCE = /[^。！？!?]{1,200}[。！？!?]/g
 
 // Drops what does not read aloud: code blocks, tables, link targets, URLs.
@@ -30,11 +32,16 @@ export function pickSentence(txt: string, opt: { shortMax: number; twoMax: numbe
   if (!txt) return null
   const t = squash(stripMarkup(txt).replace(/[`*#>_-]/g, ' '))
   if (t.length < 4) return null
-  const sentences = t.match(SENTENCE) ?? []
-  if (sentences.length === 0) return `${t.slice(0, 60)}。`
-  const s1 = sentences[0]!
-  if (s1.length <= opt.shortMax && sentences.length >= 2) {
-    const two = s1 + sentences[1]
+  const found = [...t.matchAll(SENTENCE)]
+  const first = found[0]
+  // No sentence end, or none within the first sentence's 200 characters (the
+  // first match then begins in its middle): the first 60 characters.
+  if (!first || /[^。！？!?\s]/.test(t.slice(0, first.index))) return `${t.slice(0, 60)}。`
+  const s1 = first[0]
+  const second = found[1]
+  // The second joins only when it follows at once (not past a long run).
+  if (second && s1.length <= opt.shortMax && second.index === (first.index ?? 0) + s1.length) {
+    const two = s1 + second[0]
     if (two.length <= opt.twoMax) return two
   }
   return s1
@@ -47,16 +54,24 @@ export function stopCase(txt: string): StopCase {
   if (!txt) return 'done'
   const t = squash(stripMarkup(txt).replace(/[`*#>_]/g, ' '))
   if (t.length < 2) return 'done'
-  const sentences = t.match(SENTENCE) ?? []
-  const rest = t.slice(Math.min(sentences.join('').length, t.length)).trim()
+  const found = [...t.matchAll(SENTENCE)]
+  const sentences = found.map(m => m[0])
+  const last = found[found.length - 1]
+  // What follows the last sentence end, from where the last match ends (the
+  // matches' joined length falls short of it past a long run).
+  const rest = t.slice(last ? (last.index ?? 0) + last[0].length : 0).trim()
   const parts = rest.length >= 4 ? [...sentences, rest] : sentences
   const tail = parts.slice(-2).join('') || t
   if (/[?？]\s*$/.test(tail)) return 'ask'
   if (/(ますか|ましょうか|でしょうか|いかがですか|どうしますか|どうするか)[。．!！?？]?\s*$/.test(tail)) return 'ask'
   if (/(ご判断|ご確認ください|お選びください|お決めください|ご指示|どちらに|どちらで|番号で|教えてください|よろしいですか|いかがでしょう)/.test(tail)) return 'ask'
   // A problem said to be solved is struck out before looking for one that is
-  // not ("エラーを修正しました" is done).
-  const chk = tail.replace(/(失敗|エラー|不具合|例外|問題)[をがはも]?[^。]{0,8}?(修正|解決|直し|直り|対処|復旧|解消|通るように)/g, '')
+  // not ("エラーを修正しました" is done). So is one said not to be there
+  // ("エラーはありませんでした"), each on its own: another that is there
+  // still counts. "エラーがなくなりません" is not such a one.
+  const chk = tail
+    .replace(/(失敗|エラー|不具合|例外|問題)[をがはも]?[^。]{0,8}?(修正|解決|直し|直り|対処|復旧|解消|通るように)/g, '')
+    .replace(/(失敗|エラー|不具合|例外|問題)[はもが]?((なく|無く)(?!な)|ありません|なし|無し|出ていません|出ません|起きていません|起きません|発生していません|発生しません|見つかりません|見つかっていません|していません|しません)/g, '')
   if (/(失敗|エラー|不具合|例外|できませんでした|できていません|通りません|落ちて|未解決|解決していません|原因が分から|うまくいかな|うまくいっていません)/.test(chk)) return 'trouble'
   return 'done'
 }

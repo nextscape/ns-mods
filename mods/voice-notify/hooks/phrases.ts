@@ -3,13 +3,16 @@
 
 import type { Config } from './config'
 import { voiceFor } from './decide'
-import { hash16 } from './voicevox'
+import { SYNTH_TIMEOUT_MS, hash16 } from './voicevox'
 
 export type PhraseJob = { speaker: string; path: string; text: string }
 export type PhraseState = { total: number; missing: number; current: boolean; busy: boolean; progress: { done: number; total: number } | null }
 
 // A progress record newer than this means another session is making them.
-const BUSY_MS = 120_000
+// The record is written before the first phrase and after each, so it must
+// outlast the longest one phrase can take, or a slow one reads as a session
+// that died.
+const BUSY_MS = SYNTH_TIMEOUT_MS + 50_000
 
 // A phrase list is an array (<dir>/NN.wav) or an object of subfolders (the
 // layout 0.2.0's gen-phrases.ps1 made).

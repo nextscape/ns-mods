@@ -77,6 +77,10 @@ export function audioQueryUrl(p: SynthParams, text: string): string {
   return `${base(p.port)}/audio_query?text=${encodeURIComponent(text)}&speaker=${p.speakerId}`
 }
 
+// How long one synthesis may take before the process is given up: a little
+// over curl's own limit (-m 120, in synthArgv). No progress shows meanwhile.
+export const SYNTH_TIMEOUT_MS = 130_000
+
 // The query goes on stdin (no temporary file to make and delete). No
 // --create-dirs: Windows' own curl cannot make a folder with a non-ASCII name
 // (exit 23), so the caller makes the folder first.

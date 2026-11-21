@@ -25,15 +25,18 @@ export function pickFor(cfg: Config, text: string): string | null {
   return pickSentence(text, { shortMax: cfg.speech.shortSentenceChars, twoMax: cfg.speech.maxTwoSentenceChars })
 }
 
-// `running`: subagents at work. `pending`: what the turn's classic Stop said
-// is still in flight (inFlight), 0 when no Stop came. `tools`: the tools the
-// turn called, null when its start was not seen.
+// `running`: subagents at work. `pending`: the background work the turn's
+// classic Stop said it leaves in flight and still waits on; `ended`: the
+// background work from before the turn that had ended by that Stop
+// (trackFlight); both 0 when no Stop came. `tools`: the tools the turn
+// called, null when its start was not seen.
 export type StopInput = {
   cfg: Config
   answer: string
   durationMs: number
   running: number
   pending: number
+  ended: number
   tools: number | null
   engineAlive: boolean
 }
@@ -48,10 +51,73 @@ export type StopPlan = {
   silent: boolean
 }
 
-// What a classic Stop says is still in flight: background tasks, and wakeups
-// that fire once. A recurring one (/loop) would make every turn interim.
-export function inFlight(tasks: readonly unknown[] | undefined, crons: ReadonlyArray<{ recurring: boolean }> | undefined): number {
-  return (tasks?.length ?? 0) + (crons ?? []).filter(c => !c.recurring).length
+// What a classic Stop says is still in flight, by id: background tasks, and
+// wakeups that fire once. A recurring one (/loop) would make every turn
+// interim.
+export function inFlight(
+  tasks: ReadonlyArray<{ id: string }> | undefined,
+  crons: ReadonlyArray<{ id: string; recurring: boolean }> | undefined,
+): string[] {
+  return [...(tasks ?? []).map(t => t.id), ...(crons ?? []).filter(c => !c.recurring).map(c => `cron:${c.id}`)]
+}
+
+// The background work the main conversation's last Stop left in flight
+// (`ids`), and which of it no turn waits on any more (`settled`).
+export type Flight = { ids: readonly string[]; settled: readonly string[] }
+
+export const NO_FLIGHT: Flight = { ids: [], settled: [] }
+
+// What a Stop's in-flight work means for its turn. `before`: the flight when
+// the turn began. `own`: the person asked for the turn (isOwnTurn).
+// - `pending`: what the turn leaves in flight and still waits on. Work that
+//   was already running when the person asked for something else is settled,
+//   from then on: a dev server left running would make every turn interim. A
+//   turn a notice started (one of two builds ended) still waits on the rest.
+// - `ended`: what was in flight before the turn and no longer is.
+export function trackFlight(before: Flight, now: readonly string[], own: boolean): { flight: Flight; pending: number; ended: number } {
+  const carried = now.filter(id => before.ids.includes(id))
+  const settled = own ? carried : carried.filter(id => before.settled.includes(id))
+  return {
+    flight: { ids: [...now], settled },
+    pending: now.length - settled.length,
+    ended: before.ids.filter(id => !now.includes(id)).length,
+  }
+}
+
+// Where a prompt came from, as `prompt.submit` names it (PromptOrigin); a
+// plugin's says `asUser` when it sent the person's words.
+export type Origin = { readonly kind: string; readonly asUser?: boolean }
+
+// Origins that are not the person asking: a background task's end, a wakeup,
+// another agent's message, a follow-up the engine makes itself.
+const NOTICE_ORIGINS: ReadonlySet<string> = new Set([
+  'task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay', 'observer', 'observer-activity',
+  'auto-continuation',
+])
+
+const NOTICE_FRAME = /^\s*(?:<task-notification>|(?:Another Claude session sent a message[^\n]*\n\s*)?<agent-message\b|The \S+ plugin sent a message:)/
+
+// Whether the person asked for the turn, rather than a notice starting it.
+// The engine's origin settles it; a prompt of no known origin is told by the
+// frame it starts with, and a turn with no prompt ("") is a continuation.
+export function isOwnTurn(text: string, origin: Origin | undefined): boolean {
+  if (origin !== undefined && origin.kind !== 'unclassified') {
+    return origin.kind === 'plugin' ? origin.asUser === true : !NOTICE_ORIGINS.has(origin.kind)
+  }
+  return text.trim() !== '' && !NOTICE_FRAME.test(text)
+}
+
+// The origin of the prompt a turn starts with, among those submitted since
+// the last turn began (the latest first): the one whose text is the turn's,
+// or its last lines under a frame ("The <name> plugin sent a message:\n…").
+// One delivered into a running turn matches no later turn.
+export function originOf<O>(text: string, submitted: ReadonlyArray<{ text: string; origin: O }>): O | undefined {
+  const turn = text.trim()
+  for (let i = submitted.length - 1; i >= 0; i--) {
+    const one = submitted[i]!.text.trim()
+    if (one !== '' && (turn === one || turn.endsWith(`\n${one}`))) return submitted[i]!.origin
+  }
+  return undefined
 }
 
 export function planStop(i: StopInput): StopPlan {
@@ -62,7 +128,8 @@ export function planStop(i: StopInput): StopPlan {
   // ask and trouble still say what they are.
   const pcase = role === 'interim' && (kase === 'done' || kase === 'solo') ? 'interim' : kase
   // A short turn only says it finished (no body), keeping ask and trouble apart.
-  const brief = kase !== 'solo' && i.durationMs <= i.cfg.speech.briefMaxSeconds * 1000
+  const short = i.durationMs <= i.cfg.speech.briefMaxSeconds * 1000
+  const brief = kase !== 'solo' && short
   let first: string
   if (brief) first = `stop/brief/${pcase}`
   else if (kase === 'solo' && pcase === 'interim') first = 'stop/brief/interim'
@@ -70,9 +137,11 @@ export function planStop(i: StopInput): StopPlan {
   // Where a folder has no phrase, the next stands in (the order 0.2.0's
   // notify.ps1 used).
   const chain = [first, ...(first.startsWith('stop/brief/') ? [`stop/${pcase}`] : []), `stop/${kase}`, 'stop']
-  // A short reply with no tool called was not work to report (ask and trouble
-  // still say what they are).
-  const silent = brief && i.tools === 0 && (pcase === 'done' || pcase === 'interim')
+  // A short reply with no tool called was not work to report, whether or not
+  // its body can be read (so not by `brief` or `kase`, which a dead engine
+  // changes). Still said: ask and trouble, and the end of background work,
+  // which the person last heard was going on.
+  const silent = short && i.tools === 0 && i.ended === 0 && stopCase(i.answer) === 'done'
   return { role, case: kase, pcase, brief, phrases: [...new Set(chain)], read: !brief && kase !== 'solo', silent }
 }
 

@@ -236,6 +236,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
   })
   on('agent.list', async () => ({ value: w.agents }) as never)
   // The engine's own part (what the mod's hooks reach with next(e)).
+  on('prompt.submit', async ($, e) => ({ text: e.text }) as never)
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', async ($, e) => ({ text: e.answer }))
   on('classic.PermissionRequest', async () => ({}) as never)

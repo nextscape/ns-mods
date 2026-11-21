@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { jobsStamp, phraseBusy, phraseJobs } from '../hooks/phrases'
+import { SYNTH_TIMEOUT_MS } from '../hooks/voicevox'
 import { PHRASE_CFG, ROOT } from './world'
 
 describe('phrases', () => {
@@ -40,9 +41,11 @@ describe('phrases', () => {
     expect(jobsStamp(jobs.slice(1), PHRASE_CFG)).not.toBe(a)
   })
 
-  test('phraseBusy: an unfinished progress written within two minutes means another session is generating', () => {
-    expect(phraseBusy({ done: 3, total: 14, at: 1_000 }, 1_000 + 119_000)).toBe(true)
-    expect(phraseBusy({ done: 3, total: 14, at: 1_000 }, 1_000 + 121_000)).toBe(false)
+  test('phraseBusy: an unfinished progress no older than one phrase can take means another session is generating', () => {
+    // One phrase may take up to SYNTH_TIMEOUT_MS (130 s) with no progress written.
+    expect(phraseBusy({ done: 3, total: 14, at: 1_000 }, 1_000 + SYNTH_TIMEOUT_MS + 1_000)).toBe(true)
+    expect(phraseBusy({ done: 0, total: 14, at: 1_000 }, 1_000 + 179_000)).toBe(true)
+    expect(phraseBusy({ done: 3, total: 14, at: 1_000 }, 1_000 + 181_000)).toBe(false)
     expect(phraseBusy({ done: 14, total: 14, at: 1_000 }, 1_000)).toBe(false)
     expect(phraseBusy(null, 1_000)).toBe(false)
   })

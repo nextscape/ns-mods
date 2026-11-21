@@ -32,6 +32,13 @@ describe('text', () => {
     expect(pick('句点の無い長い文'.repeat(10))).toBe(`${'句点の無い長い文'.repeat(10).slice(0, 60)}。`)
   })
 
+  test('pickSentence: a first sentence past 200 characters is read from its start, not from its middle', () => {
+    const long = `冒頭です${'あ'.repeat(250)}`
+    expect(pick(`${long}。次の文です。`)).toBe(`${long.slice(0, 60)}。`)
+    // A stray mark before the first sentence is not such a sentence.
+    expect(pick('。完了しました。')).toBe('完了しました。')
+  })
+
   // The 25 cases of 0.2.0's tests/test-stop-case.ps1.
   test('stopCase: ask, trouble and done from the last two sentences', () => {
     const cases: Array<[ReturnType<typeof stopCase>, string]> = [
@@ -62,6 +69,30 @@ describe('text', () => {
       ['done', ''],
     ]
     for (const [want, text] of cases) expect([text, stopCase(text)]).toEqual([text, want])
+  })
+
+  test('stopCase: a problem said not to be there is not trouble', () => {
+    const cases: Array<[ReturnType<typeof stopCase>, string]> = [
+      ['done', 'テストを実行し、エラーはありませんでした。'],
+      ['done', 'ビルドは通り、失敗もありません。'],
+      ['done', '全件を確認しました。エラーなく完了しています。'],
+      ['done', 'ログを見ましたが、エラーは出ていません。'],
+      ['done', '再実行しました。テストは失敗していません。'],
+      ['done', '不具合は見つかりませんでした。'],
+      // One problem said not to be there does not hide another that is.
+      ['trouble', 'エラーはありませんが、テストが3件失敗しています。'],
+      ['trouble', 'エラーが消えません。原因を調べています。'],
+    ]
+    for (const [want, text] of cases) expect([text, stopCase(text)]).toEqual([text, want])
+  })
+
+  test('stopCase: a long run with no sentence end does not widen the last two sentences', () => {
+    // The 500 characters match as a sentence only by their last 200, which
+    // leaves the エラー before them out of the tail.
+    const text = `修正しました。${'あ'.repeat(240)}エラー${'い'.repeat(257)}以上です。`
+    expect(stopCase(text)).toBe('done')
+    // Text after the last sentence end still counts.
+    expect(stopCase('修正しました。ただしテストが3件失敗しています')).toBe('trouble')
   })
 
   // The 17 replacements of 0.2.0's tests/test-readings.ps1 (how the engine then

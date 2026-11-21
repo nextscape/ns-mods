@@ -27,12 +27,14 @@ export async function onMainTurn($: EngineInterface, rt: Runtime, e: TurnComplet
   }
   if (turn) await Promise.race([turn.stopped, $.clock.sleep(STOP_WAIT_MS)])
   const pending = turn?.pending ?? 0
+  const ended = turn?.ended ?? 0
   const tools = turn ? turn.tools : null
   const running = await runningAgents($)
   const alive = (await engineVersion($, ctx.cfg.enginePort)) !== null
-  const plan = planStop({ cfg: ctx.cfg, answer: e.answer, durationMs: e.durationMs, running, pending, tools, engineAlive: alive })
+  const plan = planStop({ cfg: ctx.cfg, answer: e.answer, durationMs: e.durationMs, running, pending, ended, tools, engineAlive: alive })
   const kase = plan.pcase !== plan.case ? `${plan.case}→${plan.pcase}` : plan.case
-  const role = plan.role === 'interim' ? `中間・実行中${running}件${pending > 0 ? `・裏の作業${pending}件` : ''}` : '最終'
+  const flight = `${pending > 0 ? `・裏の作業${pending}件` : ''}${ended > 0 ? `・終わった裏の作業${ended}件` : ''}`
+  const role = `${plan.role === 'interim' ? `中間・実行中${running}件` : '最終'}${flight}`
   await writeLog($, ctx, 'INFO', event,
     `本文 ${e.answer.length}字 / 作業 ${(e.durationMs / 1000).toFixed(1)}秒 / 道具 ${tools ?? '?'}回 / ケース ${kase}${plan.brief ? ' (brief)' : ''} / ${role} [${voiceFor(ctx.cfg, plan.role).name}]`)
   if (plan.silent) {

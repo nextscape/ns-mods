@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Config } from '../hooks/config'
 import {
+  NO_FLIGHT,
   agentReportFallback,
   agentText,
   choosePhrase,
@@ -9,9 +10,12 @@ import {
   permissionText,
   pickFor,
   inFlight,
+  isOwnTurn,
+  originOf,
   planStop,
   planSummary,
   summaryInput,
+  trackFlight,
   voiceFor,
 } from '../hooks/decide'
 import { CFG } from './world'
@@ -37,49 +41,104 @@ describe('decide', () => {
   })
 
   test('planStop: a long turn reads its body after the case phrase', () => {
-    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 0, tools: 3, engineAlive: true })).toEqual({
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 0, ended: 0, tools: 3, engineAlive: true })).toEqual({
       role: 'final', case: 'done', pcase: 'done', brief: false, phrases: ['stop/done', 'stop'], read: true, silent: false,
     })
   })
 
   test('planStop: a short turn only plays the brief phrase, keeping ask and trouble apart', () => {
-    expect(planStop({ cfg: C, answer: ASK, durationMs: 10_000, running: 0, pending: 0, tools: 3, engineAlive: true })).toEqual({
+    expect(planStop({ cfg: C, answer: ASK, durationMs: 10_000, running: 0, pending: 0, ended: 0, tools: 3, engineAlive: true })).toEqual({
       role: 'final', case: 'ask', pcase: 'ask', brief: true, phrases: ['stop/brief/ask', 'stop/ask', 'stop'], read: false, silent: false,
     })
   })
 
   test('planStop: with subagents still running, done becomes interim in the interim voice', () => {
-    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 2, pending: 0, tools: 3, engineAlive: true })).toEqual({
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 2, pending: 0, ended: 0, tools: 3, engineAlive: true })).toEqual({
       role: 'interim', case: 'done', pcase: 'interim', brief: false, phrases: ['stop/interim', 'stop/done', 'stop'], read: true, silent: false,
     })
     // ask needs an answer even mid-way, so it stays ask.
-    expect(planStop({ cfg: C, answer: ASK, durationMs: 60_000, running: 1, pending: 0, tools: 3, engineAlive: true }).pcase).toBe('ask')
+    expect(planStop({ cfg: C, answer: ASK, durationMs: 60_000, running: 1, pending: 0, ended: 0, tools: 3, engineAlive: true }).pcase).toBe('ask')
   })
 
   test('planStop: no readable body or no engine is solo, which never reads', () => {
-    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 0, pending: 0, tools: 3, engineAlive: true })).toEqual({
+    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 0, pending: 0, ended: 0, tools: 3, engineAlive: true })).toEqual({
       role: 'final', case: 'solo', pcase: 'solo', brief: false, phrases: ['stop/solo', 'stop'], read: false, silent: false,
     })
-    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 0, tools: 3, engineAlive: false }).case).toBe('solo')
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 0, ended: 0, tools: 3, engineAlive: false }).case).toBe('solo')
     // A solo interim report has no body to follow, so it takes the short interim.
-    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 1, pending: 0, tools: 3, engineAlive: true }).phrases).toEqual([
+    expect(planStop({ cfg: C, answer: '', durationMs: 60_000, running: 1, pending: 0, ended: 0, tools: 3, engineAlive: true }).phrases).toEqual([
       'stop/brief/interim', 'stop/interim', 'stop/solo', 'stop',
     ])
   })
 
   test('planStop: background work or a one-shot wakeup still in flight makes the turn interim', () => {
-    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 1, tools: 3, engineAlive: true })).toMatchObject({
+    expect(planStop({ cfg: C, answer: DONE, durationMs: 60_000, running: 0, pending: 1, ended: 0, tools: 3, engineAlive: true })).toMatchObject({
       role: 'interim', pcase: 'interim', read: true,
     })
-    expect(inFlight([], [])).toBe(0)
-    expect(inFlight(undefined, undefined)).toBe(0)
-    expect(inFlight([{ id: 'b1' }, { id: 'b2' }], [{ recurring: false }])).toBe(3)
+  })
+
+  test('inFlight lists what a Stop says is in flight by id, without recurring wakeups', () => {
+    expect(inFlight([], [])).toEqual([])
+    expect(inFlight(undefined, undefined)).toEqual([])
+    expect(inFlight([{ id: 'b1' }, { id: 'b2' }], [{ id: 'c1', recurring: false }])).toEqual(['b1', 'b2', 'cron:c1'])
     // A recurring wakeup (/loop) does not keep every turn interim.
-    expect(inFlight([], [{ recurring: true }])).toBe(0)
+    expect(inFlight([], [{ id: 'c2', recurring: true }])).toEqual([])
+  })
+
+  test('trackFlight: work a turn starts is waited on; what the person moved on from is not', () => {
+    // A build started in this turn.
+    expect(trackFlight(NO_FLIGHT, ['b1'], true)).toEqual({ flight: { ids: ['b1'], settled: [] }, pending: 1, ended: 0 })
+    // A dev server from before the person's next request, and a build started in it.
+    expect(trackFlight({ ids: ['d1'], settled: [] }, ['d1', 'b1'], true)).toEqual({
+      flight: { ids: ['d1', 'b1'], settled: ['d1'] }, pending: 1, ended: 0,
+    })
+    // Settled work stays settled when a notice starts the turn; the build that ended is counted.
+    expect(trackFlight({ ids: ['d1', 'b1'], settled: ['d1'] }, ['d1'], false)).toEqual({
+      flight: { ids: ['d1'], settled: ['d1'] }, pending: 0, ended: 1,
+    })
+  })
+
+  test('trackFlight: a turn a notice started still waits on the rest', () => {
+    // One of two builds ended and woke the session.
+    expect(trackFlight({ ids: ['b1', 'b2'], settled: [] }, ['b2'], false)).toMatchObject({ pending: 1, ended: 1 })
+    // Read twice in one turn (a Stop hook sent it on), it reads the same.
+    const before = { ids: ['b1'], settled: [] }
+    expect(trackFlight(before, ['b1', 'b2'], true)).toEqual(trackFlight(before, ['b1', 'b2'], true))
+    expect(trackFlight(before, ['b1', 'b2'], true).pending).toBe(1)
+  })
+
+  test('isOwnTurn: the engine names who started the turn; with no origin, the frame tells', () => {
+    expect(isOwnTurn('お願いします', { kind: 'composer' })).toBe(true)
+    expect(isOwnTurn('お願いします', { kind: 'bridge' })).toBe(true)
+    expect(isOwnTurn('<task-notification>x</task-notification>', { kind: 'task-notification' })).toBe(false)
+    // A wakeup comes back to work that is waited on: it settles nothing.
+    expect(isOwnTurn('ビルドを確認する', { kind: 'scheduled-trigger' })).toBe(false)
+    expect(isOwnTurn('続きです', { kind: 'peer' })).toBe(false)
+    expect(isOwnTurn('x', { kind: 'plugin' })).toBe(false)
+    expect(isOwnTurn('x', { kind: 'plugin', asUser: true })).toBe(true)
+    expect(isOwnTurn('お願いします', undefined)).toBe(true)
+    expect(isOwnTurn('お願いします', { kind: 'unclassified' })).toBe(true)
+    expect(isOwnTurn('<task-notification>x</task-notification>', undefined)).toBe(false)
+    expect(isOwnTurn('Another Claude session sent a message:\n<agent-message from="a">x</agent-message>', undefined)).toBe(false)
+    expect(isOwnTurn('The lab plugin sent a message:\nx', { kind: 'unclassified' })).toBe(false)
+    // A continuation has no prompt.
+    expect(isOwnTurn('', undefined)).toBe(false)
+  })
+
+  test('originOf finds the turn’s prompt among those submitted, the latest first', () => {
+    const submitted = [
+      { text: '先の依頼', origin: 'a' },
+      { text: 'お願いします', origin: 'b' },
+      { text: 'お願いします', origin: 'c' },
+    ]
+    expect(originOf('お願いします', submitted)).toBe('c')
+    expect(originOf('The lab plugin sent a message:\n先の依頼', submitted)).toBe('a')
+    expect(originOf('知らない文', submitted)).toBeUndefined()
+    expect(originOf('', [{ text: '', origin: 'a' }])).toBeUndefined()
   })
 
   test('planStop: a short reply that called no tool is silent; ask and trouble still speak', () => {
-    const quick = { cfg: C, durationMs: 10_000, running: 0, pending: 0, engineAlive: true }
+    const quick = { cfg: C, durationMs: 10_000, running: 0, pending: 0, ended: 0, engineAlive: true }
     expect(planStop({ ...quick, answer: DONE, tools: 0 }).silent).toBe(true)
     expect(planStop({ ...quick, answer: DONE, tools: 0, pending: 1 }).silent).toBe(true)
     expect(planStop({ ...quick, answer: ASK, tools: 0 }).silent).toBe(false)
@@ -87,6 +146,23 @@ describe('decide', () => {
     // A turn whose start was not seen keeps the brief phrase.
     expect(planStop({ ...quick, answer: DONE, tools: null }).silent).toBe(false)
     expect(planStop({ ...quick, answer: DONE, tools: 0, durationMs: 60_000 }).silent).toBe(false)
+  })
+
+  test('planStop: the turn that reports background work has ended speaks, tool or no tool', () => {
+    // The person heard "still working" when that work began: its end is news.
+    const quick = { cfg: C, answer: 'ビルドが完了しました。', durationMs: 5_000, running: 0, pending: 0, tools: 0, engineAlive: true }
+    expect(planStop({ ...quick, ended: 1 })).toMatchObject({ role: 'final', silent: false, phrases: ['stop/brief/done', 'stop/done', 'stop'] })
+    expect(planStop({ ...quick, ended: 0 }).silent).toBe(true)
+  })
+
+  test('planStop: a short reply that called no tool is silent with no readable body or no engine too', () => {
+    const quick = { cfg: C, durationMs: 10_000, running: 0, pending: 0, ended: 0, tools: 0 }
+    // Under 4 characters there is no sentence to read: solo.
+    expect(planStop({ ...quick, answer: 'はい', engineAlive: true })).toMatchObject({ case: 'solo', silent: true })
+    expect(planStop({ ...quick, answer: DONE, engineAlive: false })).toMatchObject({ case: 'solo', silent: true })
+    // A question still speaks with the engine down.
+    expect(planStop({ ...quick, answer: ASK, engineAlive: false }).silent).toBe(false)
+    expect(planStop({ ...quick, answer: DONE, engineAlive: false, tools: 2 }).silent).toBe(false)
   })
 
   test('planSummary: disabled, other events and short answers are skipped; interim is capped', () => {

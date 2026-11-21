@@ -12,6 +12,7 @@ import type { Os } from './os'
 import type { Ctx } from './runtime'
 import { convertReading } from './text'
 import {
+  SYNTH_TIMEOUT_MS,
   audioQueryUrl,
   cachePath,
   cacheToDrop,
@@ -58,7 +59,7 @@ export async function synthesize($: EngineInterface, p: SynthParams, text: strin
   // and another session never plays it half written. Each call writes its own
   // part file, so two making the same clip at once do not share one.
   const part = `${path}.${Math.random().toString(36).slice(2, 10)}.part`
-  const r = await run($, synthArgv(p, part), { stdin: JSON.stringify(tuneQuery(query, p)), timeoutMs: 130_000 })
+  const r = await run($, synthArgv(p, part), { stdin: JSON.stringify(tuneQuery(query, p)), timeoutMs: SYNTH_TIMEOUT_MS })
   if (r.exitCode !== 0) {
     await removeFiles($, p.os, [part])
     return { error: `synthesis: curl ${r.exitCode} ${r.stderr.trim()}` }

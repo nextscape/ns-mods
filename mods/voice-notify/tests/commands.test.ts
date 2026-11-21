@@ -115,6 +115,30 @@ describe('voice-notify commands', () => {
     expect(w.files.get(`${ROOT}/phrases/metan/stop/done/01.wav`)).toBe('RIFF-fake-wav')
   })
 
+  test('setup force removes the wavs of folders config.json emptied, which no job names', async ($, on) => {
+    // PHRASE_USER empties task and stop.ask: phrases made before that would go
+    // on playing, as playing picks from whatever wav a folder holds.
+    const gone = [`${ROOT}/phrases/metan/task/01.wav`, `${ROOT}/phrases/metan/stop/ask/02.wav`, `${ROOT}/phrases/zundamon/stop/brief/ask/01.wav`]
+    const w = setup(on, { files: Object.fromEntries(gone.map(p => [p, 'old'])) })
+    await run($, 'voice-notify', 'setup force')
+    await settle(w)
+    expect(gone.filter(p => w.files.has(p))).toEqual([])
+    expect(w.files.get(`${ROOT}/phrases/metan/idle/01.wav`)).toBe('RIFF-fake-wav')
+  })
+
+  test('generating says so before the first phrase, so another session does not start too', async ($, on) => {
+    let atFirst: string | undefined
+    const w: World = setup(on, {
+      run: argv => {
+        if (/^curl/.test(argv[0]!) && argv[1] !== '--version') atFirst ??= w.files.get(`${ROOT}/state/phrases-progress`) ?? ''
+        return undefined
+      },
+    })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: ROOT } as never)
+    await settle(w)
+    expect(atFirst).toBe('{"done":0,"total":14}')
+  })
+
   test('setup force remakes every phrase; a failed run leaves no stamp', async ($, on) => {
     const w = setup(on, { run: a => (a[0] === 'curl.exe' && a[1] === '-s' ? { exitCode: 22, stderr: 'HTTP 500' } : undefined) })
     await run($, 'voice-notify', 'setup force')

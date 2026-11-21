@@ -4,9 +4,12 @@ import { runCommand } from './commands'
 import { onAgentTurn, onMainTurn, onNotice, onPermission, onTask } from './events'
 import { resumePhrases } from './generate'
 import { background } from './io'
-import { inFlight } from './decide'
+import { inFlight, isOwnTurn, originOf, trackFlight } from './decide'
 import { createRuntime, mainTurn } from './runtime'
 import { COMMAND } from './setup'
+
+// Prompts kept for the next turn to find its own among (originOf).
+const SUBMITTED = 10
 
 // voice-notify: says what happens in Claude Code in a VOICEVOX voice.
 //
@@ -52,12 +55,25 @@ export const register: Register = on => {
     }
   }).catch(($, e, next) => next(e))
 
+  // Where each prompt came from, for the turn it starts (originOf). Noted
+  // before `next`: a prompt submitted while idle starts its turn within it.
+  on('prompt.submit', async ($, e, next) => {
+    rt.submitted = [...rt.submitted, { text: e.text, origin: e.origin }].slice(-SUBMITTED)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('turn.start', async ($, e, next) => {
     rt.working.add(e.turnId)
+    // A subagent's run starts here too, naming its agentId (which older
+    // engines' types leave out): the main turn it runs inside keeps its record.
+    if ((e as { agentId?: string }).agentId !== undefined) return next(e)
     // A Stop may come after its turn's end, so a turn is let go at the next
     // one's start.
     rt.turns.clear()
-    rt.turns.set(e.turnId, mainTurn())
+    rt.turns.set(e.turnId, mainTurn(isOwnTurn(e.text, originOf(e.text, rt.submitted)), rt.flight))
+    // This turn's prompt was among those submitted; the rest were delivered
+    // into the turn before. A continuation ("") starts with none of them.
+    if (e.text !== '') rt.submitted = []
     rt.current = e.turnId
     return next(e)
   })
@@ -70,11 +86,15 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   // What is still in flight when the main turn stops: a turn that only waits
-  // on it is not done.
+  // on it is not done. Read against the flight when the turn began, so a
+  // second Stop of the same turn (a Stop hook sent it on) reads the same.
   on('classic.Stop', async ($, e, next) => {
     const turn = e.agent_id === undefined && rt.current ? rt.turns.get(rt.current) : undefined
     if (turn) {
-      turn.pending = inFlight(e.background_tasks, e.session_crons)
+      const now = trackFlight(turn.before, inFlight(e.background_tasks, e.session_crons), turn.own)
+      rt.flight = now.flight
+      turn.pending = now.pending
+      turn.ended = now.ended
       turn.stop()
     }
     return next(e)

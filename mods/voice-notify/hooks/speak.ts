@@ -114,6 +114,9 @@ export async function playSynth($: EngineInterface, ctx: Ctx, event: string, r: 
     await writeLog($, ctx, 'ERR', event, alive ? `合成失敗: ${r.error}` : `VOICEVOX ENGINE に接続できない (port ${port})。定型フレーズのみ再生: ${r.error}`)
     return
   }
+  // Asked again: the summary, the synthesis and the phrase before this clip
+  // took seconds, and the person may have muted or joined a call meanwhile.
+  if (await quiet($, ctx, event)) return
   await play($, ctx, r.path)
   // Only a new clip adds to the cache.
   if (!r.cached) await pruneCache($, ctx)

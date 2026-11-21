@@ -37,6 +37,10 @@ export async function moveFile($: EngineInterface, os: Os, from: string, to: str
 }
 
 // Never throws: a log line that cannot be written must not stop the speech.
+// The gate keeps this session's lines whole. Another session's, or a script's
+// (toggle.ps1, start-engine.ps1), written between the read and the write
+// here are lost: accepted and said in the README, as the only way to append
+// is a process started for every line, before the speech it comes ahead of.
 export async function writeLog($: EngineInterface, to: LogTo, level: Level, event: string, msg: string): Promise<void> {
   const { rt, root } = to
   try {

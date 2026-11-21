@@ -6,7 +6,7 @@ import type { EngineInterface } from 'claude-code'
 import { engineVersion, synthesize } from './engine'
 import { context, removeFiles, writeLog } from './io'
 import { jobsStamp, phraseBusy, phraseJobs } from './phrases'
-import type { PhraseState } from './phrases'
+import type { PhraseJob, PhraseState } from './phrases'
 import type { Ctx, Runtime } from './runtime'
 import { convertReading } from './text'
 import { synthParams } from './voicevox'
@@ -40,18 +40,26 @@ export async function phraseState($: EngineInterface, ctx: Ctx): Promise<PhraseS
   }
 }
 
-// What `force` deletes first: every wav in the jobs' folders. Playing picks
-// from all the wav files in a folder, so an old NN.wav left after the
-// wording shrank would keep saying a phrase that is gone.
-async function phraseFolderWavs($: EngineInterface, jobs: readonly { path: string }[]): Promise<string[]> {
+// What `force` deletes first: every wav under the folders of the voices in
+// use, at any depth. Playing picks from all the wav files in a folder, so an
+// old NN.wav would keep saying a phrase that is gone: one left after the
+// wording shrank, or a whole folder config.json emptied, which no job names.
+async function phraseWavs($: EngineInterface, root: string, jobs: readonly PhraseJob[]): Promise<string[]> {
   const out: string[] = []
-  for (const dir of new Set(jobs.map(j => j.path.slice(0, j.path.lastIndexOf('/'))))) {
+  const walk = async (dir: string): Promise<void> => {
+    let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
     try {
-      for (const f of await $.fs.list(dir)) if (f.kind === 'file' && f.name.endsWith('.wav')) out.push(`${dir}/${f.name}`)
+      entries = await $.fs.list(dir)
     } catch {
       // Not made yet.
+      return
+    }
+    for (const f of entries) {
+      if (f.kind === 'dir') await walk(`${dir}/${f.name}`)
+      else if (f.kind === 'file' && f.name.endsWith('.wav')) out.push(`${dir}/${f.name}`)
     }
   }
+  for (const speaker of new Set(jobs.map(j => j.speaker))) await walk(`${root}/phrases/${speaker}`)
   return out
 }
 
@@ -63,7 +71,11 @@ export async function generatePhrases($: EngineInterface, ctx: Ctx, force: boole
   try {
     const jobs = phraseJobs(ctx.cfg, ctx.root)
     const stamp = stampPath(ctx.root)
-    if (force) await removeFiles($, ctx.os, [...(await phraseFolderWavs($, jobs)), stamp])
+    // Said before anything is deleted or made: until the first phrase is done
+    // (seconds, or minutes on a slow engine) another session starting up would
+    // find phrases missing and nobody making them, and make them too.
+    await $.fs.write(progressPath(ctx.root), JSON.stringify({ done: 0, total: jobs.length }))
+    if (force) await removeFiles($, ctx.os, [...(await phraseWavs($, ctx.root, jobs)), stamp])
     // Phrases kept from before are known to match only when the stamp says
     // so (0.2.0's lack the lead silence). Otherwise no stamp is written, and
     // doctor goes on asking for `setup force`.
