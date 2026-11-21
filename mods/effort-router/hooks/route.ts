@@ -70,13 +70,21 @@ export function asLevel(effort: string | number | undefined): Level | null {
 // Routed: Opus, Sonnet and Haiku from 5.5 on, Fable and Mythos from 5.1 on, the
 // models that keep the prompt cache across effort changes. A later version
 // (Opus 6, Sonnet 5.6) is routed too. The rubric is tuned for Opus 5.5.
-const ROUTED_FROM: Readonly<Record<string, number>> = { opus: 5.5, sonnet: 5.5, haiku: 5.5, fable: 5.1, mythos: 5.1 }
+// Major and minor, each a number of its own: 4.15 comes before 5.5.
+const ROUTED_FROM: Readonly<Record<string, readonly [number, number]>> = {
+  opus: [5, 5],
+  sonnet: [5, 5],
+  haiku: [5, 5],
+  fable: [5, 1],
+  mythos: [5, 1],
+}
 
 export function isRouted(model: string): boolean {
   const found = /claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2})(?!\d))?/.exec(model)
   if (!found) return false
-  const version = Number(found[2]) + Number(found[3] ?? 0) / 10
-  return version >= ROUTED_FROM[found[1]!]!
+  const [fromMajor, fromMinor] = ROUTED_FROM[found[1]!]!
+  const major = Number(found[2])
+  return major > fromMajor || (major === fromMajor && Number(found[3] ?? 0) >= fromMinor)
 }
 
 const EFFORTS: readonly string[] = [...LEVELS, 'max']
@@ -120,17 +128,34 @@ export function noticeOf(text: string, origin?: Origin): Notice | null {
   return null
 }
 
-// The origin of the prompt a turn starts with, among those submitted since
-// the last turn began (the latest first): the one whose text is the turn's,
-// or its last lines under a frame ("The <name> plugin sent a message:\n…").
-// One delivered into a running turn matches no later turn.
-export function originOf<O>(text: string, submitted: ReadonlyArray<{ text: string; origin: O }>): O | undefined {
+// A prompt submitted and not yet the start of a turn: its text as it entered
+// (as submitted until then), and `isEntering` while the hooks beneath and the
+// engine are still taking it in.
+export type Submitted<O> = { text: string; origin: O; isEntering?: boolean }
+
+// The prompt a turn starts with, among those submitted (the latest first):
+// the one whose text is the turn's, or its last lines under a frame ("The
+// <name> plugin sent a message:\n…"). Failing that, the one still entering: a
+// prompt submitted while idle starts its turn before it has entered, with
+// whatever text the hooks beneath made of it; with two entering there is no
+// telling which. `rest` is what stays for later turns: the prompts after it,
+// which wait behind this turn for their own (those before it were delivered
+// into the turn before), or all of them when the turn's is not among them.
+export function claim<O>(
+  text: string,
+  submitted: ReadonlyArray<Submitted<O>>,
+): { origin: O | undefined; rest: ReadonlyArray<Submitted<O>> } {
   const turn = text.trim()
-  for (let i = submitted.length - 1; i >= 0; i--) {
+  let at = -1
+  for (let i = submitted.length - 1; i >= 0 && at < 0; i--) {
     const one = submitted[i]!.text.trim()
-    if (one !== '' && (turn === one || turn.endsWith(`\n${one}`))) return submitted[i]!.origin
+    if (one !== '' && (turn === one || turn.endsWith(`\n${one}`))) at = i
   }
-  return undefined
+  if (at < 0) {
+    const entering = submitted.flatMap((one, i) => (one.isEntering === true ? [i] : []))
+    if (entering.length === 1) at = entering[0]!
+  }
+  return at < 0 ? { origin: undefined, rest: submitted } : { origin: submitted[at]!.origin, rest: submitted.slice(at + 1) }
 }
 
 // The level a turn that is not judged carries on at: the previous turn's
@@ -283,9 +308,16 @@ function cleanOption(text: string): string {
 const OPTION_LINE = /^\s*(?:[-*+]\s+)?(?:\*\*)?(?:案|option\s*)?[(（]?(\d{1,2}|[A-Za-z])(?:[.．)）:：、])(?:\*\*)?\s*(?!\d)(.+)$/i
 const OPTION_ROW = /^\s*\|\s*(?:\*\*)?(\d{1,2}|[A-Za-z])(?:\*\*)?\s*\|(.+)$/
 
+// Whether `key` is the one after `last` in a run: 2 after 1, b after a.
+function follows(key: string, last: string): boolean {
+  return /^\d/.test(last) ? key === String(Number(last) + 1) : key === String.fromCharCode(last.charCodeAt(0) + 1)
+}
+
 // The last run of numbered or lettered lines in the answer (a list, or the
-// rows of a table): a new run starts at 1 or a. Lines inside a code block
-// are code, not options.
+// rows of a table). A run starts at 1 or a, goes on in order, and has two
+// lines at least: a line of prose that only looks lettered ("e.g. …",
+// "C:\…", "A: …") starts none and joins none. Lines inside a code block are
+// code, not options.
 export function optionsOf(answer: string): Option[] {
   let run: Option[] = []
   let last: Option[] = []
@@ -298,14 +330,13 @@ export function optionsOf(answer: string): Option[] {
     if (inCode) continue
     const found = OPTION_LINE.exec(raw) ?? OPTION_ROW.exec(raw)
     if (!found) continue
-    const key = found[1]!.toLowerCase()
+    const key = /^\d/.test(found[1]!) ? String(Number(found[1])) : found[1]!.toLowerCase()
     const text = cleanOption(found[2]!)
     if (text === '') continue
-    if (key === '1' || key === 'a' || run.length === 0) {
-      run = []
-      last = run
-    }
-    if (run.length < MAX_OPTIONS && !run.some(one => one.key === key)) run.push({ key, text })
+    if (key === '1' || key === 'a') run = [{ key, text }]
+    else if (run.length > 0 && run.length < MAX_OPTIONS && follows(key, run[run.length - 1]!.key)) run.push({ key, text })
+    else continue
+    if (run.length > 1) last = run
   }
   return last
 }

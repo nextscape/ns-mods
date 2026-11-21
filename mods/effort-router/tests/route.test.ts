@@ -5,6 +5,7 @@ import {
   asLevel,
   asksOf,
   carried,
+  claim,
   compact,
   compose,
   decide,
@@ -16,7 +17,6 @@ import {
   levelOf,
   noticeOf,
   optionsOf,
-  originOf,
   picked,
   plan,
   raise,
@@ -151,6 +151,9 @@ describe('route', () => {
     ]
     expect(routed.filter(model => !isRouted(model))).toEqual([])
     expect(notRouted.filter(isRouted)).toEqual([])
+    // A minor of two digits is a number, not a fraction: 4.15 is below 5.5.
+    expect(['claude-sonnet-4-15', 'claude-opus-4-10', 'claude-fable-4-12', 'claude-fable-5-0'].filter(isRouted)).toEqual([])
+    expect(['claude-opus-5-10', 'claude-fable-5-10', 'us.anthropic.claude-opus-5-5-v1:0'].filter(model => !isRouted(model))).toEqual([])
     expect(['high', ' XHIGH ', 'max', '', 'auto', 'hgih'].map(effortArg)).toEqual(['high', 'xhigh', 'max', null, null, null])
   })
 
@@ -182,10 +185,11 @@ describe('route', () => {
     expect(noticeOf('次の文を訳して: The voice plugin sent a message:')).toBe(null)
   })
 
-  test('a turn finds its prompt\'s origin among those submitted since the last', () => {
+  test('a turn finds its prompt\'s origin among those submitted', () => {
     const composer = { kind: 'composer' }
     const peer = { kind: 'peer' }
     const plugin = { kind: 'plugin', name: 'voice' }
+    const originOf = (text: string, submitted: Array<{ text: string; origin: { kind: string } }>) => claim(text, submitted).origin
     expect(originOf('hi', [{ text: 'hi', origin: composer }])).toBe(composer)
     // A plugin's prompt starts its turn under the plugin's frame.
     expect(originOf('The voice plugin sent a message:\nhi there', [{ text: 'hi there', origin: plugin }])).toBe(plugin)
@@ -196,6 +200,28 @@ describe('route', () => {
     expect(originOf('はい', [{ text: 'い', origin: peer }])).toBeUndefined()
     expect(originOf('調べて', [{ text: '', origin: peer }])).toBeUndefined()
     expect(originOf('調べて', [])).toBeUndefined()
+  })
+
+  test('the prompts submitted after the one a turn starts with wait for their own turns', () => {
+    const delivered = { text: 'report', origin: { kind: 'peer' } }
+    const first = { text: '<task-notification> a1', origin: { kind: 'task-notification' } }
+    const second = { text: 'Continue the task.', origin: { kind: 'auto-continuation' } }
+    // The one before it was delivered into the turn before: gone with it.
+    expect(claim(first.text, [delivered, first, second]).rest).toEqual([second])
+    expect(claim(second.text, [second])).toEqual({ origin: second.origin, rest: [] })
+    // A turn whose prompt is not among them takes none of them.
+    expect(claim('調べて', [first, second])).toEqual({ origin: undefined, rest: [first, second] })
+  })
+
+  test('a prompt still on its way in is the one the turn starts with, whatever became of its text', () => {
+    const waiting = { text: 'Continue the task.', origin: { kind: 'auto-continuation' } }
+    const entering = { text: '調べて', origin: { kind: 'composer' }, isEntering: true }
+    // The hooks beneath rewrote it, so its text matches nothing.
+    expect(claim('[ctx] 調べて', [waiting, entering])).toEqual({ origin: entering.origin, rest: [] })
+    // A prompt whose text is the turn's comes first.
+    expect(claim(waiting.text, [waiting, entering])).toEqual({ origin: waiting.origin, rest: [entering] })
+    // Two on their way in: no telling which.
+    expect(claim('[ctx] 調べて', [entering, { ...entering }]).origin).toBeUndefined()
   })
 
   test('a turn not judged carries the previous level from before its mid-turn raise', () => {
@@ -223,6 +249,20 @@ describe('route', () => {
       { key: '2', text: '消す' },
     ])
     expect(optionsOf('1.5倍に増えました')).toEqual([])
+  })
+
+  test('prose lines that only look lettered or numbered are not options', () => {
+    expect(optionsOf('テストを先に流します。\ne.g. run npm test first\n以上で完了です。')).toEqual([])
+    expect(optionsOf('出力先は次のとおりです。\nC:\\Users\\me\\out.txt\n完了しました。')).toEqual([])
+    expect(optionsOf('Q: なぜ遅いのか\nA: キャッシュが効いていないためです。\n修正しました。')).toEqual([])
+    // One line is nothing to choose between.
+    expect(optionsOf('1. 残す')).toEqual([])
+    // A run goes on in order; a line out of order neither joins nor replaces it.
+    expect(optionsOf('1. 残す\n2. 消す\ne.g. 消すと元に戻せません\nA: 補足です')).toEqual([
+      { key: '1', text: '残す' },
+      { key: '2', text: '消す' },
+    ])
+    expect(optionsOf('01. 残す\n02. 消す').map(one => one.key)).toEqual(['1', '2'])
   })
 
   test('options survive CRLF; numbered lines inside a code block are not options', () => {

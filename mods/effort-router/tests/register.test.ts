@@ -12,8 +12,11 @@ const replies: string[] = []
 // The engine beneath the plugin: the classifier's completion answers from
 // `answers` in turn (an Error is a call that timed out), the model request records the effort it was sent with
 // and answers from `replies`, and the turn's own events and the status line
-// simply complete.
-function world(on: On, answers: Array<string | undefined | Error>) {
+// simply complete. `submit` stands for the hooks beneath the plugin and the
+// engine's own entry of a prompt: by default it enters as submitted.
+type Submit = (e: { text: string; origin: PromptOrigin }) => Promise<{ text: string; origin?: PromptOrigin } | { drop: string }>
+
+function world(on: On, answers: Array<string | undefined | Error>, submit: Submit = async e => ({ text: e.text, origin: e.origin })) {
   mock.store(on)
   mock.clock(on)
   const seen = {
@@ -30,7 +33,7 @@ function world(on: On, answers: Array<string | undefined | Error>) {
     if (answer instanceof Error) return { value: { isAnswered: false, reason: 'aborted', usage } } as never
     return { value: { isAnswered: true, text: answer ?? '', usage } } as never
   })
-  on('prompt.submit', async ($, e) => ({ text: e.text, origin: e.origin }))
+  on('prompt.submit', async ($, e) => submit(e))
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
   on('turn.step', async function* ($, e) {
     seen.sent.push(e.effort)
@@ -253,6 +256,64 @@ describe('effort-router', () => {
     expect(seen.sent).toEqual(['medium', 'high'])
   })
 
+  test('each prompt waiting behind a running turn keeps its origin for the turn it starts', async ($, on) => {
+    const seen = world(on, [label('high'), label('low')])
+    const resume = 'Your claude.ai usage limit has reset. Continue the task you were working on.'
+    await turn($, LONG, {
+      between: async () => {
+        await $.prompt.submit({ text: NOTICE, wait: false, origin: { kind: 'task-notification' }, turnId: 'running' })
+        await $.prompt.submit({ text: resume, wait: false, origin: { kind: 'auto-continuation' }, turnId: 'running' })
+      },
+    })
+    await turn($, NOTICE)
+    await turn($, resume)
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.sent).toEqual(['high', 'high', 'high'])
+    expect(seen.status.at(-1)).toBe('high (continuation, kept)')
+  })
+
+  test('a waiting prompt the hooks beneath rewrote keeps its origin', async ($, on) => {
+    const seen = world(on, [label('high'), label('low')], async e => ({ text: `[ctx] ${e.text}`, origin: e.origin }))
+    await turn($, LONG, {
+      between: () => $.prompt.submit({ text: 'Continue the task.', wait: false, origin: { kind: 'auto-continuation' }, turnId: 'running' }),
+    })
+    await turn($, '[ctx] Continue the task.')
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.status.at(-1)).toBe('high (continuation, kept)')
+  })
+
+  test('a prompt submitted while idle keeps its origin though the hooks beneath rewrote it', async ($, on) => {
+    // Idle: the turn starts within the submission, with the text as rewritten.
+    const seen = world(on, [label('high'), label('low')], async e => {
+      const text = `[ctx] ${e.text}`
+      await $.turn.start({ text, turnId: 'idle-1' })
+      return { text, origin: e.origin }
+    })
+    await turn($, LONG)
+    await $.prompt.submit({ text: 'Continue the task.', wait: false, origin: { kind: 'auto-continuation' } })
+    expect(seen.inputs.length).toBe(1)
+    expect(seen.status.at(-1)).toBe('high (continuation, kept)')
+  })
+
+  test('a prompt that was dropped marks no later turn', async ($, on) => {
+    const seen = world(on, [label('medium'), label('high')], async () => ({ drop: 'refused' }))
+    await turn($, LONG, {
+      between: () => $.prompt.submit({ text: '進捗を教えて', wait: false, origin: { kind: 'peer' }, turnId: 'running' }),
+    })
+    await turn($, '進捗を教えて')
+    expect(seen.inputs.length).toBe(2)
+    expect(seen.sent).toEqual(['medium', 'high'])
+  })
+
+  test('a turn stopped before its first request leaves the level before it to carry on', async ($, on) => {
+    const seen = world(on, [label('high'), label('low')])
+    await turn($, LONG)
+    await turn($, LONG, { steps: 0 })
+    await turn($, '続けて')
+    expect(seen.sent).toEqual(['high', 'high'])
+    expect(seen.status.at(-1)).toBe('high (short prompt, kept)')
+  })
+
   test('a notice carries the judged level, not the one raised mid-turn', async ($, on) => {
     const seen = world(on, [label('low')])
     await turn($, LONG, { steps: 12 })
@@ -292,6 +353,18 @@ describe('effort-router', () => {
     expect(seen.status.at(-1)).toBe('low')
     const { text } = await run($, 'log')
     expect(text).toContain('medium -> high\tmanual')
+  })
+
+  test("/effort between turns runs a notice as set and still holds for the person's next prompt", async ($, on) => {
+    const seen = world(on, [label('medium'), label('low')])
+    on('command.run', { command: 'effort' }, async () => ({ text: '' }))
+    await turn($, LONG)
+    await effort($, 'high')
+    await turn($, NOTICE, { effort: 'high' })
+    await turn($, LONG, { effort: 'high' })
+    await turn($, LONG, { effort: 'high' })
+    expect(seen.sent).toEqual(['medium', 'high', 'high', 'low'])
+    expect(seen.inputs.length).toBe(2)
   })
 
   test('/effort from the slider shows the effort once a request carries it', async ($, on) => {
@@ -423,6 +496,26 @@ describe('effort-router', () => {
     expect(text).toContain('asked 進め方')
   })
 
+  test('a notice turn re-judged from an AskUserQuestion answer is logged as asked, not as a notice', async ($, on) => {
+    world(on, [label('high'), label('medium')])
+    on('tool.call', async () => ({
+      result: {
+        questions: [{ question: '次にどう進めますか？', header: '進め方', options: [{ label: '実装する' }, { label: '終了する' }], multiSelect: false }],
+        answers: { '次にどう進めますか？': '終了する' },
+      },
+    }))
+    await turn($, LONG)
+    await turn($, NOTICE, {
+      steps: 2,
+      between: async index => {
+        if (index === 0) await $.tool.call({ tool: 'AskUserQuestion', questions: [] })
+      },
+    })
+    const { text } = await run($, 'log')
+    expect(text).toContain('high -> medium\tasked 進め方')
+    expect(text).not.toContain('asked task notice')
+  })
+
   test('a short first prompt keeps the session effort', async ($, on) => {
     const { sent } = world(on, [])
     await turn($, '続けて')
@@ -435,6 +528,15 @@ describe('effort-router', () => {
     await turn($, LONG, { model: 'claude-haiku-4-5-20251001' })
     expect(seen.inputs).toEqual([])
     expect(seen.status).toEqual(['not routed (claude-haiku-4-5-20251001)'])
+  })
+
+  test("a first prompt on a model not routed asks nothing under a provider's id either", async ($, on) => {
+    const seen = world(on, [label('high')])
+    const model = 'us.anthropic.claude-opus-4-1-20250805-v1:0'
+    on('session.model', async () => ({ value: model }))
+    await turn($, LONG, { model })
+    expect(seen.inputs).toEqual([])
+    expect(seen.status).toEqual([`not routed (${model})`])
   })
 
   test('a switch to a routed model is judged from the next prompt; a switch away stops judging', async ($, on) => {

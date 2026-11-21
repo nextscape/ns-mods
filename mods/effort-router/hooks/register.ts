@@ -10,6 +10,7 @@ import {
   asLevel,
   asksOf,
   carried,
+  claim,
   compose,
   decide,
   effortArg,
@@ -19,13 +20,12 @@ import {
   levelOf,
   noticeOf,
   optionsOf,
-  originOf,
   plan,
   raise,
   rank,
   tail,
 } from './route'
-import type { Asked, Decision, Notice, Origin, Route } from './route'
+import type { Asked, Decision, Notice, Origin, Route, Submitted } from './route'
 
 // Picks the main thread's effort per prompt: low / medium / high / xhigh,
 // judged from the request and the previous turn's signals. A reply that
@@ -45,7 +45,7 @@ const LOG_KEY = 'log'
 const MODE_KEY = 'mode'
 const LOG_LIMIT = 200
 const RECENT = 3
-// Prompts kept for the next turn to find its own among (originOf).
+// Prompts kept for the turns to come to find their own among (claim).
 const SUBMITTED = 10
 
 const prevTurn = atom({ plugin: 'effort-router', key: 'prev' } as const, null)
@@ -120,10 +120,12 @@ export const register: Register = on => {
   let current: string | undefined
   // The main thread's model as its last request named it.
   let mainModel: string | undefined
-  // A /effort typed between turns: the next turn runs as set.
+  // A /effort typed between turns: the person's next prompt runs as set, and
+  // so does a notice that comes before it.
   let manualNext = false
-  // Prompts submitted since the last turn began, with where each came from.
-  let submitted: Array<{ text: string; origin: Origin | undefined }> = []
+  // Prompts submitted and not yet the start of a turn, with where each came
+  // from.
+  let submitted: ReadonlyArray<Submitted<Origin | undefined>> = []
   const turns = new Map<string, Turn>()
 
   on('session.start', async ($, e, next) => {
@@ -183,11 +185,23 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // Where each prompt came from, for the turn it starts (originOf). Noted
+  // Where each prompt came from, for the turn it starts (claim). Noted
   // before `next`: a prompt submitted while idle starts its turn within it.
+  // Once it has entered, its text is what the hooks beneath made of it, which
+  // is what the turn it waits for starts with; one that was dropped starts none.
   on('prompt.submit', async ($, e, next) => {
-    submitted = [...submitted, { text: e.text, origin: e.origin }].slice(-SUBMITTED)
-    return next(e)
+    const one: Submitted<Origin | undefined> = { text: e.text, origin: e.origin, isEntering: true }
+    submitted = [...submitted, one].slice(-SUBMITTED)
+    try {
+      // Read with care: a throw after `next` would send the prompt again
+      // (the catch below), and an older engine may answer in another shape.
+      const entered = await next(e)
+      if (entered?.drop !== undefined) submitted = submitted.filter(other => other !== one)
+      else if (typeof entered?.text === 'string') one.text = entered.text
+      return entered
+    } finally {
+      one.isEntering = false
+    }
     // Noting only watches: if it throws, the prompt goes as submitted.
   }).catch(($, e, next) => next(e))
 
@@ -195,10 +209,10 @@ export const register: Register = on => {
     // A subagent's own turn starts here too, naming its agentId (which older
     // engines' types leave out): not the main thread's, so not judged.
     if ((e as { agentId?: string }).agentId !== undefined || e.text === '') return next(e)
-    // This turn's prompt is among those submitted since the last turn began;
-    // the rest were delivered into that one.
-    const origin = originOf(e.text, submitted)
-    submitted = []
+    // This turn's prompt is among those submitted; the ones after it wait
+    // for their own turns.
+    const { origin, rest } = claim(e.text, submitted)
+    submitted = rest
     if (!isOn) return next(e)
     // Before the first request names the model, ask the session for it.
     if (mainModel === undefined) mainModel = await sessionModel($)
@@ -211,13 +225,24 @@ export const register: Register = on => {
     const prev = await read($, prevTurn)
     // A turn not judged carries this on: the last level judged, unraised.
     const prevLevel = carried(prev)
+    const notice = noticeOf(e.text, origin)
     if (manualNext) {
-      manualNext = false
+      // A notice runs as set too, and leaves the setting for the person's own
+      // prompt: it is that prompt /effort was typed for.
+      if (notice === null) manualNext = false
       current = e.turnId
-      turns.set(e.turnId, { level: undefined, judged: null, why: 'manual', ...fresh, manual: true, request: e.text, picked: null })
+      turns.set(e.turnId, {
+        level: undefined,
+        judged: null,
+        why: 'manual',
+        ...fresh,
+        manual: true,
+        request: e.text,
+        picked: null,
+        ...(notice === null ? {} : { notice }),
+      })
       return next(e)
     }
-    const notice = noticeOf(e.text, origin)
     const route = notice === null ? plan(e.text, prev) : null
     let decision: Decision
     let picked: string | null = null
@@ -274,6 +299,8 @@ export const register: Register = on => {
     turn.judged = decision.judged
     turn.why = 'asked'
     turn.picked = asked.picked
+    // Judged from the person's answer now, not kept as a notice.
+    delete turn.notice
     // Escalation counts afresh from this judgment.
     turn.since = turn.steps
     turn.sinceErrors = turn.toolErrors
@@ -344,8 +371,12 @@ export const register: Register = on => {
         options,
         asks: asksOf(e.answer, options),
       }
-      await update($, prevTurn, () => signals)
-      await update($, recentLevels, list => [...list, turn.applied].slice(-RECENT))
+      // A turn stopped before its first request ran at no level and answered
+      // nothing: the turn before it stays the one to carry on from.
+      if (turn.steps > 0) {
+        await update($, prevTurn, () => signals)
+        await update($, recentLevels, list => [...list, turn.applied].slice(-RECENT))
+      }
       const entry: LogEntry = {
         at: await $.clock.now(),
         head: head(turn.request, 40),
@@ -388,10 +419,11 @@ async function judge($: EngineInterface, input: string): Promise<string | Error>
 
 // The main loop's model id, or undefined when the session does not name it
 // as an id (an alias such as "opus" is left to the first request to settle).
+// A provider's id carries the model's inside it ("us.anthropic.claude-…").
 async function sessionModel($: EngineInterface): Promise<string | undefined> {
   try {
     const model = await $.session.model()
-    return /^claude-/.test(model) ? model : undefined
+    return /(?:^|[^a-z])claude-/.test(model) ? model : undefined
   } catch {
     return undefined
   }
